@@ -15,7 +15,7 @@
 # ##### END GPL LICENSE BLOCK #####
 
 bl_info = {
-    "name": "Ambitools",
+    "name": "Mesh Refine Toolbox",
     "category": "Mesh",
     "description": "Various tools for mesh processing",
     "author": "ambi",
@@ -164,7 +164,7 @@ class PanelBuilder:
 
     def create_panel(this):
         class _pt(bpy.types.Panel):
-            bl_label = this.master_name.capitalize()
+            bl_label = " ".join([i.capitalize() for i in this.master_name.split("_")])
             bl_idname = this.master_panel
 
             bl_space_type = 'VIEW_3D'
@@ -215,13 +215,14 @@ class PanelBuilder:
         for k, v in self.panel.items():
             delattr(bpy.types.Scene, self.master_panel+"_"+k)
 
+
 class Master_OP:
     def generate(self):
         pass
 
     def __init__(self):
         self.props = OrderedDict()
-        self.parent_name = "ambitools"
+        self.parent_name = "mesh_refine_toolbox"
 
         self.generate()
 
@@ -232,7 +233,6 @@ class Master_OP:
             bpy.ops.object.mode_set(mode = mode)
 
         self.op = mesh_operator_factory(self.props, self.prefix, _wrap, self.name, self.parent_name)
-
 
 class Masked_Smooth_OP(Master_OP):
     def generate(self):
@@ -267,7 +267,6 @@ class Masked_Smooth_OP(Master_OP):
 
         self.payload = _pl
 
-
 class CropToLarge_OP(Master_OP):
     def generate(self):
         self.props['shells']  = bpy.props.IntProperty(name="Shells", default=1, min=1, max=100)
@@ -290,44 +289,55 @@ class CropToLarge_OP(Master_OP):
                         bm.faces[f.index].select = False
 
             bpy.ops.mesh.delete(type='FACE')
-            
-            if False:
-                pass
-                # find separated shells (no edge connections between verts)
-                # idx =  np.arange((len(verts)), dtype=np.uint32)
-                # parr = np.copy(idx)
-                # while True:
-                #     np.minimum.at(idx, edges[:,0], idx[edges[:,1]])
-                #     np.minimum.at(idx, edges[:,1], idx[edges[:,0]])
-                #     # optimize: when a number is overwritten, replace all numbers with new, not just the one
-                #     if np.all(idx == parr):
-                #         break
-                #     else:
-                #         parr = np.copy(idx)
-
-                # uniques, counts = np.unique(idx, return_counts=True)
-                # print(len(uniques))
-                # big_shell = sorted(zip(uniques, counts), key=lambda x: x[1])[-1][0]
-                # mesh.vertices.foreach_set("select", idx != big_shell)
-
-                #bpy.ops.object.mode_set(mode = 'EDIT')
-                #bpy.ops.mesh.delete(type='VERT')
-                #bpy.ops.object.mode_set(mode = 'OBJECT')
-
-                #delete_these =  np.nonzero(idx != big_shell)[0]
-                # delete all verts that aren't part of the big shell
-                # bm = bmesh.new()
-                # bm.from_mesh(mesh)
-                # bm.verts.ensure_lookup_table()
-                # verts = [bm.verts[i] for i in delete_these]
-                # for v in verts:
-                #     v.select = True
-                # bmesh.ops.delete(bm, geom=verts)
-                # bm.to_mesh(mesh)
-                # bm.free()
 
         self.payload = _pl
 
+class MergeTiny_OP(Master_OP):
+    def generate(self):
+        self.props['threshold'] = bpy.props.FloatProperty(name="Threshold", default=0.02, min=0.0, max=1.0)
+
+        self.prefix = "merge_tiny_faces"
+        self.name = "OBJECT_OT_MergeTinyFaces"
+        self.start_mode = 'EDIT'
+
+        def _pl(self, mesh, context):
+            with au.Bmesh_from_edit(mesh) as bm:
+                # thin faces
+                collapse_these = []
+                avg = sum(f.calc_area() for f in bm.faces)/len(bm.faces)
+                for f in bm.faces:
+                    if f.calc_area() < avg * self.threshold:
+                        collapse_these.extend(f.edges)
+
+                bmesh.ops.collapse(bm, edges=list(set(collapse_these)))
+                bmesh.ops.connect_verts_concave(bm, faces=bm.faces)
+
+        self.payload = _pl
+
+class CleanupThinFace_OP(Master_OP):
+    def generate(self):
+        self.props['threshold'] = bpy.props.FloatProperty(name="Threshold", default=0.95, min=0.0, max=1.0)
+        self.props['repeat'] = bpy.props.IntProperty(name="Repeat", default=2, min=0, max=10)
+
+        self.prefix = "cleanup_thin_faces"
+        self.name = "OBJECT_OT_CleanupThinFace"
+        self.start_mode = 'EDIT'
+
+        def _pl(self, mesh, context):
+            with au.Bmesh_from_edit(mesh) as bm:
+                for _ in range(self.repeat):
+                    # thin faces
+                    collapse_these = []
+                    for f in bm.faces:
+                        avg = sum(e.calc_length() for e in f.edges)
+                        if any(e.calc_length() > avg/2 * self.threshold  for e in f.edges):
+                            shortest = min(f.edges, key=lambda x: x.calc_length())
+                            collapse_these.append(shortest)
+
+                    bmesh.ops.collapse(bm, edges=list(set(collapse_these)))
+                    bmesh.ops.connect_verts_concave(bm, faces=bm.faces)
+
+        self.payload = _pl
 
 class Cleanup_OP(Master_OP):
     def generate(self):
@@ -436,43 +446,28 @@ class Cleanup_OP(Master_OP):
                 # fill faces for each loop
                 # triangulate
                 if self.fillface:
-                    loops = au.bmesh_get_boundary_edgeloops_from_selected(bm)
-                    au.bmesh_deselect_all(bm)
+                    all_faces = []
+                    for _ in range(2):
+                        bm.edges.ensure_lookup_table()
+                        loops = au.bmesh_get_boundary_edgeloops_from_selected(bm)
+                        new_faces, leftover_loops = au.bmesh_fill_from_loops(bm, loops)
 
-                    # TODO: filter out invalid loops(?)
-                    new_faces = []
-                    leftover_loops = []
+                        all_faces.extend(new_faces)
+                        au.bmesh_deselect_all(bm)
 
-                    for l in loops:
-                        nl = au.bmesh_vertloop_from_edges(l)
-                        if nl:
-                            f = bm.faces.new(nl)
-                            f.select = True
-                            f.smooth = True
-                            new_faces.append(f)
-                        else:
-                            leftover_loops.append(l)
+                        for l in leftover_loops:
+                            for e in l:
+                                e.select = True
 
-                    au.bmesh_deselect_all(bm)
-                    for l in leftover_loops:
-                        for e in l:
-                            e.select = True
+                        print(len(leftover_loops))
+                        if len(leftover_loops) == 0:
+                            break
 
-                    loops = au.bmesh_get_boundary_edgeloops_from_selected(bm)
-
-                    for l in loops:
-                        nl = au.bmesh_vertloop_from_edges(l)
-                        if nl:
-                            f = bm.faces.new(nl)
-                            f.select = True
-                            f.smooth = True
-                            new_faces.append(f)
-
-                    for f in new_faces:
+                    for f in all_faces:
                         f.select = True
 
-                    bmesh.ops.recalc_face_normals(bm, faces=new_faces)
-                    res = bmesh.ops.triangulate(bm, faces=new_faces)
+                    bmesh.ops.recalc_face_normals(bm, faces=all_faces)
+                    res = bmesh.ops.triangulate(bm, faces=all_faces)
                     smooth_verts = []
                     for f in res['faces']:
                         for v in f.verts:
@@ -499,7 +494,8 @@ class Cleanup_OP(Master_OP):
         self.payload = _pl
 
 
-pbuild = PanelBuilder("ambitools", "ambitools_panel", [Masked_Smooth_OP(), CropToLarge_OP(), Cleanup_OP()])
+pbuild = PanelBuilder("mesh_refine_toolbox", "mesh_refine_toolbox_panel", \
+    [Masked_Smooth_OP(), CropToLarge_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP()])
 OBJECT_PT_ToolsAMB = pbuild.create_panel()
 
 def register():

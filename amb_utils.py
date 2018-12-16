@@ -344,11 +344,38 @@ def bmesh_vertloop_from_edges(edges):
         test = e0[0] not in res
         te = e0[0] if test else e1[0]
         res.append(te)
-        verts.append(r.verts[int(not test)])
+
+        # FIXME: hack
+        v = r.verts[int(not test)]
+        if len(verts) == 0:
+            verts.append(v)
+        elif verts[-1] != v:
+            verts.append(v)
 
     verts.append(res[-1].other_vert(verts[-1]))
     #print([i.index for i in verts])
-    return verts
+
+    # final sanity check
+    if len(verts) != len(list(set(verts))):
+        return None
+    else:
+        return verts
+
+
+def bmesh_fill_from_loops(bm, loops):
+    new_faces = []
+    leftover_loops = []
+    for l in loops:
+        nl = bmesh_vertloop_from_edges(l)
+        if nl:
+            f = bm.faces.new(nl)
+            f.select = True
+            f.smooth = True
+            new_faces.append(f)
+        else:
+            leftover_loops.append(l)
+
+    return new_faces, leftover_loops
 
 
 def bmesh_deselect_all(bm):
