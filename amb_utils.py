@@ -5,6 +5,8 @@ import bpy
 import bmesh
 import random
 
+#import numba
+
 import cProfile, pstats, io
 
 def write_fast(ve, qu):
@@ -200,7 +202,6 @@ def mesh_smooth_filter_variable(data, fastverts, fastedges, iterations):
         data = new_data
 
     return new_data
-
 
 
 def get_nonmanifold_verts(mesh):

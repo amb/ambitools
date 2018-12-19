@@ -14,16 +14,6 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
-bl_info = {
-    "name": "Mesh Refine Toolbox",
-    "category": "Mesh",
-    "description": "Various tools for mesh processing",
-    "author": "ambi",
-    "location": "3D view > Tools",
-    "version": (1, 1, 0),
-    "blender": (2, 79, 0)
-}
-
 # import/reload all source files
 if "bpy" in locals():
     import importlib
@@ -39,6 +29,9 @@ import bmesh
 import random
 import cProfile, pstats, io
 from collections import defaultdict, OrderedDict
+import mathutils as mu
+
+#import numba
 
 
 def op_fraggle(mesh, thres, n):
@@ -102,7 +95,7 @@ class Mesh_Operator(bpy.types.Operator):
         pass
 
     def invoke(self, context, event):
-        #self.pr = au.profiling_start()
+        self.pr = au.profiling_start()
 
         # copy property values from panel to operator
         print(self.prefix, self.my_props)
@@ -125,9 +118,9 @@ class Mesh_Operator(bpy.types.Operator):
         # run mesh operation
         mesh = context.active_object.data
         self.payload(mesh, context)
-        mesh.update(calc_edges=True)
+        #mesh.update(calc_edges=True)
 
-        #au.profiling_end(self.pr)
+        au.profiling_end(self.pr)
 
         return {'FINISHED'}
 
@@ -226,13 +219,16 @@ class Master_OP:
 
         self.generate()
 
-        def _wrap(this, mesh, context):
-            mode = bpy.context.object.mode
-            bpy.ops.object.mode_set(mode = self.start_mode)
-            self.payload(this, mesh, context)
-            bpy.ops.object.mode_set(mode = mode)
+        if hasattr(self, 'start_mode'):
+            def _wrap(this, mesh, context):
+                mode = context.object.mode
+                bpy.ops.object.mode_set(mode = self.start_mode)
+                self.payload(this, mesh, context)
+                bpy.ops.object.mode_set(mode = mode)
 
-        self.op = mesh_operator_factory(self.props, self.prefix, _wrap, self.name, self.parent_name)
+            self.op = mesh_operator_factory(self.props, self.prefix, _wrap, self.name, self.parent_name)
+        else:
+            self.op = mesh_operator_factory(self.props, self.prefix, self.payload, self.name, self.parent_name)
 
 class Masked_Smooth_OP(Master_OP):
     def generate(self):
@@ -265,11 +261,13 @@ class Masked_Smooth_OP(Master_OP):
 
             au.write_verts(mesh, new_verts)
 
+            mesh.update(calc_edges=True)
+
         self.payload = _pl
 
 class CropToLarge_OP(Master_OP):
     def generate(self):
-        self.props['shells']  = bpy.props.IntProperty(name="Shells", default=1, min=1, max=100)
+        self.props['shells'] = bpy.props.IntProperty(name="Shells", default=1, min=1, max=100)
 
         self.prefix = "crop_to_large"
         self.name = "OBJECT_OT_CropToLarge"
@@ -314,6 +312,111 @@ class MergeTiny_OP(Master_OP):
 
         self.payload = _pl
 
+class SurfaceSmooth_OP(Master_OP):
+    def generate(self):
+        self.props['border'] = bpy.props.BoolProperty(name="Exclude border", default=True)
+        self.props['iter']   = bpy.props.IntProperty(name="Iterations", default=2, min=1, max=10)
+
+        self.prefix = "surface_smooth"
+        self.name = "OBJECT_OT_SurfaceSmooth"
+        self.start_mode = 'EDIT'
+
+        def _pl(self, mesh, context):
+            with au.Bmesh_from_edit(mesh) as bm:
+                limit_verts = set([])
+                if self.border:
+                    for e in bm.edges:
+                        if len(e.link_faces) < 2:
+                            limit_verts.add(e.verts[0].index)
+                            limit_verts.add(e.verts[1].index)
+
+                for _ in range(self.iter):
+                    for v in bm.verts:
+                        if v.index in limit_verts:
+                            continue
+
+                        ring1 = au.vert_vert(v)
+                        projected = []
+                        for rv in ring1:
+                            nv = rv.co - v.co
+                            dist = nv.dot(v.normal)
+                            projected.append(rv.co-dist*v.normal)
+
+                        new_loc = mu.Vector([0.0, 0.0, 0.0])
+                        for p in projected:
+                            new_loc += p
+                        new_loc /= len(projected)
+
+                        v.co = new_loc
+
+        self.payload = _pl
+
+class EdgeSmooth_OP(Master_OP):
+    def generate(self):
+        self.props['border'] = bpy.props.BoolProperty(name="Exclude border", default=True)
+        self.props['iter']   = bpy.props.IntProperty(name="Iterations", default=2, min=1, max=10)
+
+        self.prefix = "edge_smooth"
+        self.name = "OBJECT_OT_EdgeSmooth"
+        self.start_mode = 'EDIT'
+
+        def _pl(self, mesh, context):
+            with au.Bmesh_from_edit(mesh) as bm:
+                limit_verts = set([])
+                if self.border:
+                    for e in bm.edges:
+                        if len(e.link_faces) < 2:
+                            limit_verts.add(e.verts[0].index)
+                            limit_verts.add(e.verts[1].index)
+
+                for _ in range(self.iter):
+                    # project surrounding verts to normal plane and move <v> to center
+                    for v in bm.verts:
+                        if v.index in limit_verts:
+                            continue
+
+                        ring1 = au.vert_vert(v)
+                        projected = []
+                        for rv in ring1:
+                            nv = rv.co - v.co
+                            dist = nv.dot(v.normal)
+                            projected.append(rv.co-dist*v.normal)
+                            
+                        for i, rv in enumerate(ring1):
+                            if rv.normal.dot(v.normal) < 0.99:
+                                p = projected[i]
+
+                                # project 2-plane intersection instead of location
+                                
+                                # which direction is the point? (on the v.normal plane)
+                                # make it a 1.0 length vector
+                                p = (p-v.co).normalized()
+
+                                # v + n*p = <the normal plane of rv>, find n
+                                d = rv.normal.dot(p)
+                                if abs(d) > 1e-6:
+                                    w = v.co - rv.co
+                                    fac = -rv.normal.dot(w)/d
+                                    u = p * fac
+
+                                    # sanity limit for movement length
+                                    dist = v.co-rv.co
+                                    if u.length > dist.length:
+                                        u = u*dist.length/u.length
+                                    
+                                    projected[i] = v.co + u
+
+
+
+                        if len(projected) > 1:
+                            new_loc = mu.Vector([0.0, 0.0, 0.0])
+                            for p in projected:
+                                new_loc += p
+                            new_loc /= len(projected)
+                            v.co = new_loc
+
+        self.payload = _pl
+
 class CleanupThinFace_OP(Master_OP):
     def generate(self):
         self.props['threshold'] = bpy.props.FloatProperty(name="Threshold", default=0.95, min=0.0, max=1.0)
@@ -323,19 +426,42 @@ class CleanupThinFace_OP(Master_OP):
         self.name = "OBJECT_OT_CleanupThinFace"
         self.start_mode = 'EDIT'
 
+        
         def _pl(self, mesh, context):
-            with au.Bmesh_from_edit(mesh) as bm:
-                for _ in range(self.repeat):
-                    # thin faces
-                    collapse_these = []
-                    for f in bm.faces:
-                        avg = sum(e.calc_length() for e in f.edges)
-                        if any(e.calc_length() > avg/2 * self.threshold  for e in f.edges):
-                            shortest = min(f.edges, key=lambda x: x.calc_length())
-                            collapse_these.append(shortest)
+            bm = bmesh.from_edit_mesh(mesh)
+            thr = self.threshold
 
-                    bmesh.ops.collapse(bm, edges=list(set(collapse_these)))
-                    bmesh.ops.connect_verts_concave(bm, faces=bm.faces)
+            for _ in range(self.repeat):
+                bm.edges.ensure_lookup_table()
+                bm.faces.ensure_lookup_table()
+
+                collapse_these = []
+                for f in bm.faces:
+                    s = 0.0
+                    for e in f.edges:
+                        s += e.calc_length()
+                    s=s/2*thr
+                    for e in f.edges:
+                        if e.calc_length() > s:
+                            mval = 100000.0
+                            sed = None
+                            for e in f.edges:
+                                cl = e.calc_length()
+                                if cl<mval:
+                                    mval=cl
+                                    sed=e
+                            collapse_these.append(sed)
+                            break
+
+                #cthese = [bm.faces[i].edges[j] for i, j in res]
+                cthese = list(set(collapse_these))
+                print(len(cthese), "collapsed edges")
+                
+                bmesh.ops.collapse(bm, edges=cthese)
+                bmesh.ops.connect_verts_concave(bm, faces=bm.faces)
+            
+            bmesh.update_edit_mesh(mesh)
+            mesh.update(calc_edges=True)
 
         self.payload = _pl
 
@@ -459,6 +585,9 @@ class Cleanup_OP(Master_OP):
                             for e in l:
                                 e.select = True
 
+                        # TODO: loops with 4 edge connections (one vert) could be 
+                        #       split into 2 verts which makes the loops simple
+
                         print(len(leftover_loops))
                         if len(leftover_loops) == 0:
                             break
@@ -493,9 +622,55 @@ class Cleanup_OP(Master_OP):
 
         self.payload = _pl
 
+class Test_OP(Master_OP):
+    def generate(self):
+        self.props['test'] = bpy.props.FloatProperty(name="Test", default=0.02, min=0.0, max=1.0)
+
+        self.prefix = "test"
+        self.name = "OBJECT_OT_Test"
+
+        #@numba.jit
+        def _pl(self, mesh, context):
+            print("hello")
+            
+            # def sum2(two_dimensional_array):    
+            #     result = 0.0
+            #     J, I = two_dimensional_array.shape    
+            #     for i in range(J):
+            #         for j in range(I):
+            #             result += two_dimensional_array[i,j]    
+            #     return result
+            # print(sum2(np.array([[1,2],[3,4]])))
+            
+            bm = bmesh.new()
+            bm.from_mesh(mesh)
+            bm.verts.ensure_lookup_table()
+
+            for v in bm.verts:
+                bm.verts[v.index].co += mu.Vector([0.1,0.0,0.0])
+
+            bm.to_mesh(mesh)
+
+            bm.free()
+
+            mesh.update(calc_edges=True)
+
+        self.payload = _pl
+
+
+bl_info = {
+    "name": "Mesh Refine Toolbox",
+    "category": "Mesh",
+    "description": "Various tools for mesh processing",
+    "author": "ambi",
+    "location": "3D view > Tools",
+    "version": (1, 1, 0),
+    "blender": (2, 79, 0)
+}
+
 
 pbuild = PanelBuilder("mesh_refine_toolbox", "mesh_refine_toolbox_panel", \
-    [Masked_Smooth_OP(), CropToLarge_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP()])
+    [SurfaceSmooth_OP(), EdgeSmooth_OP(), CropToLarge_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP()])
 OBJECT_PT_ToolsAMB = pbuild.create_panel()
 
 def register():
