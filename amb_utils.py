@@ -9,10 +9,9 @@ import random
 
 import cProfile, pstats, io
 
-def write_fast(ve, qu):
+def write_fast(ve, qu, tr):
     me = bpy.data.meshes.new("testmesh")
 
-    tr = np.array([])
     quadcount = len(qu)
     tricount  = len(tr)
 

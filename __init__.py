@@ -423,6 +423,8 @@ class EdgeSmooth_OP(Master_OP):
                                 u = p * fac
 
                                 # sanity limit for movement length
+                                # this doesn't actually prevent the explosion
+                                # just makes it a little more pleasing to look at 
                                 dist = v.co-rv.co
                                 if u.length > dist.length:
                                     u = u*dist.length/u.length
@@ -464,6 +466,51 @@ class EdgeSmooth_OP(Master_OP):
                 bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
 
             #mesh.update(calc_edges=True)
+
+        self.payload = _pl
+
+class Mechanize_OP(Master_OP):
+    def generate(self):
+        self.props['border'] = bpy.props.BoolProperty(name="Exclude border", default=True)
+        self.props['iter']   = bpy.props.IntProperty(name="Iterations", default=2, min=1, max=10)
+
+        self.prefix = "mechanize"
+        self.name = "OBJECT_OT_Mechanize"
+        self.start_mode = 'EDIT'
+
+        def _pl(self, mesh, context):
+            with au.Bmesh_from_edit(mesh) as bm:
+                limit_verts = set([])
+                if self.border:
+                    for e in bm.edges:
+                        if len(e.link_faces) < 2:
+                            limit_verts.add(e.verts[0].index)
+                            limit_verts.add(e.verts[1].index)
+
+                for _ in range(self.iter):
+                    for v in bm.verts:
+                        if v.index in limit_verts:
+                            continue
+
+                        ring1 = au.vert_vert(v)
+                        projected = []
+                        distances = []
+                        for rv in ring1:
+                            nv = rv.co - v.co
+                            dist = nv.dot(v.normal)
+                            distances.append(abs(dist)/nv.length)
+                            projected.append(rv.co-dist*v.normal)
+
+                        # dist_min = min(distances)
+                        # for i in range(len(distances)):
+                        #     distances[i] += dist_min
+
+                        dist_sum = sum(distances)
+                        new_loc = mu.Vector([0.0, 0.0, 0.0])
+                        for i, p in enumerate(projected):
+                            new_loc += p*distances[i]/dist_sum
+
+                        v.co = new_loc
 
         self.payload = _pl
 
@@ -720,7 +767,8 @@ bl_info = {
 
 
 pbuild = PanelBuilder("mesh_refine_toolbox", "mesh_refine_toolbox_panel", \
-    [SurfaceSmooth_OP(), EdgeSmooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP(), CropToLarge_OP()])
+    #[Mechanize_OP(), SurfaceSmooth_OP(), EdgeSmooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP(), CropToLarge_OP()])
+    [Mechanize_OP(), SurfaceSmooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP(), CropToLarge_OP()])
 OBJECT_PT_ToolsAMB = pbuild.create_panel()
 
 def register():
