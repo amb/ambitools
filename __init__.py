@@ -472,7 +472,7 @@ class EdgeSmooth_OP(Master_OP):
 class Mechanize_OP(Master_OP):
     def generate(self):
         self.props['border'] = bpy.props.BoolProperty(name="Exclude border", default=True)
-        self.props['iter']   = bpy.props.IntProperty(name="Iterations", default=2, min=1, max=10)
+        self.props['iter']   = bpy.props.IntProperty(name="Iterations", default=2, min=1, max=50)
 
         self.prefix = "mechanize"
         self.name = "OBJECT_OT_Mechanize"
@@ -487,12 +487,19 @@ class Mechanize_OP(Master_OP):
                             limit_verts.add(e.verts[0].index)
                             limit_verts.add(e.verts[1].index)
 
-                for _ in range(self.iter):
-                    for v in bm.verts:
-                        if v.index in limit_verts:
-                            continue
+                ok_verts = []
+                for v in bm.verts:
+                    if v.index not in limit_verts:
+                        ok_verts.append(v)
 
-                        ring1 = au.vert_vert(v)
+                ring1s = []
+                for v in bm.verts:
+                    ring1s.append(au.vert_vert(v))
+
+                for xx in range(self.iter):
+                    print("iteration:", xx+1)
+                    for v in ok_verts:
+                        ring1 = ring1s[v.index]
                         projected = []
                         distances = []
                         for rv in ring1:
@@ -507,8 +514,14 @@ class Mechanize_OP(Master_OP):
 
                         dist_sum = sum(distances)
                         new_loc = mu.Vector([0.0, 0.0, 0.0])
-                        for i, p in enumerate(projected):
-                            new_loc += p*distances[i]/dist_sum
+
+                        if dist_sum/len(projected) > 0.02:
+                            for i, p in enumerate(projected):
+                                new_loc += p*distances[i]/dist_sum
+                        else:
+                            for i, p in enumerate(projected):
+                                new_loc += p
+                            new_loc /= len(projected)
 
                         v.co = new_loc
 
@@ -768,7 +781,7 @@ bl_info = {
 
 pbuild = PanelBuilder("mesh_refine_toolbox", "mesh_refine_toolbox_panel", \
     #[Mechanize_OP(), SurfaceSmooth_OP(), EdgeSmooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP(), CropToLarge_OP()])
-    [Mechanize_OP(), SurfaceSmooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP(), CropToLarge_OP()])
+    [Mechanize_OP(), SurfaceSmooth_OP(), Masked_Smooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP(), CropToLarge_OP()])
 OBJECT_PT_ToolsAMB = pbuild.create_panel()
 
 def register():
