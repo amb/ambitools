@@ -302,9 +302,9 @@ class MergeTiny_OP(Master_OP):
             with au.Bmesh_from_edit(mesh) as bm:
                 # thin faces
                 collapse_these = []
-                avg = sum(f.calc_area() for f in bm.faces)/len(bm.faces)
+                avg = sum(f.calc_perimeter() for f in bm.faces)/len(bm.faces)
                 for f in bm.faces:
-                    if f.calc_area() < avg * self.threshold:
+                    if f.calc_perimeter() < avg * self.threshold:
                         collapse_these.extend(f.edges)
 
                 bmesh.ops.collapse(bm, edges=list(set(collapse_these)))
@@ -355,6 +355,7 @@ class EdgeSmooth_OP(Master_OP):
     def generate(self):
         self.props['border'] = bpy.props.BoolProperty(name="Exclude border", default=True)
         self.props['iter']   = bpy.props.IntProperty(name="Iterations", default=2, min=1, max=10)
+        self.props['thres']  = bpy.props.FloatProperty(name="Threshold", default=0.95, min=0.0, max=1.0)
 
         self.prefix = "edge_smooth"
         self.name = "OBJECT_OT_EdgeSmooth"
@@ -369,51 +370,100 @@ class EdgeSmooth_OP(Master_OP):
                             limit_verts.add(e.verts[0].index)
                             limit_verts.add(e.verts[1].index)
 
+                # record initial normal field
+                normals = []
+                for v in bm.verts:
+                    normals.append(v.normal)
+
+                thr = self.thres
+
                 for _ in range(self.iter):
                     # project surrounding verts to normal plane and move <v> to center
+                    new_verts = []
                     for v in bm.verts:
+                        new_verts.append(v.co)
                         if v.index in limit_verts:
                             continue
 
+                        v_norm = normals[v.index]
                         ring1 = au.vert_vert(v)
+
+                        # get projected points on plane defined by v_norm
                         projected = []
+                        n_diff = []
                         for rv in ring1:
-                            nv = rv.co - v.co
-                            dist = nv.dot(v.normal)
-                            projected.append(rv.co-dist*v.normal)
+                            nv = rv.co-v.co
+                            dist = nv.dot(v_norm)
+                            projected.append(rv.co-dist*v_norm)
+                            n_diff.append(rv.co-projected[-1])
                             
+                        # get approximate co-planar verts
+                        coplanar = []
+                        discord = []
                         for i, rv in enumerate(ring1):
-                            if rv.normal.dot(v.normal) < 0.99:
-                                p = projected[i]
+                            r_norm = normals[rv.index]
+                            if r_norm.dot(v_norm) > thr:
+                                coplanar.append((i,rv))
+                            else:
+                                discord.append((i,rv))
 
-                                # project 2-plane intersection instead of location
+                        for i, rv in discord:
+                            # project 2-plane intersection instead of location
+                            # which direction is the point? (on the v.normal plane)
+                            # make it a 1.0 length vector
+                            p = projected[i]
+                            p = (p-v.co).normalized()
+
+                            # v + n*p = <the normal plane of rv>, find n
+                            d = r_norm.dot(p)
+                            # if abs(d) > 1e-6:
+                            if d > 1e-6:
+                                w = v.co - rv.co
+                                fac = r_norm.dot(w)/d
+                                u = p * fac
+
+                                # sanity limit for movement length
+                                dist = v.co-rv.co
+                                if u.length > dist.length:
+                                    u = u*dist.length/u.length
                                 
-                                # which direction is the point? (on the v.normal plane)
-                                # make it a 1.0 length vector
-                                p = (p-v.co).normalized()
+                                projected[i] = v.co + u
+                                #projected = [v.co + u]
+                                break
+                            else:
+                                projected[i] = v.co
 
-                                # v + n*p = <the normal plane of rv>, find n
-                                d = rv.normal.dot(p)
-                                if abs(d) > 1e-6:
-                                    w = v.co - rv.co
-                                    fac = -rv.normal.dot(w)/d
-                                    u = p * fac
+                        final_norm = v_norm
+                        for i, rv in coplanar:
+                            final_norm += r_norm
 
-                                    # sanity limit for movement length
-                                    dist = v.co-rv.co
-                                    if u.length > dist.length:
-                                        u = u*dist.length/u.length
-                                    
-                                    projected[i] = v.co + u
+                        normals[v.index] = final_norm.normalized()
 
-
-
-                        if len(projected) > 1:
+                        if len(projected) > 0:
                             new_loc = mu.Vector([0.0, 0.0, 0.0])
                             for p in projected:
                                 new_loc += p
-                            new_loc /= len(projected)
-                            v.co = new_loc
+                            new_verts[-1] = new_loc / len(projected)
+
+                        # move towards average valid 1-ring plane
+                        # TODO: this should project to new normal (from coplanar norms), not old v.normal
+                        # new_verts[-1] = v.co
+                        # if len(coplanar) > 0:
+                        #     total = mu.Vector([0.0, 0.0, 0.0])
+                        #     for i, rv in coplanar: 
+                        #         total += n_diff[i]
+                        #     total /= len(coplanar)
+                        #     new_verts[-1] += total                     
+
+                            
+
+                    # finally set new values for verts
+                    for i, v in enumerate(bm.verts):
+                        v.co = new_verts[i]
+
+                bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+
+            #mesh.update(calc_edges=True)
 
         self.payload = _pl
 
@@ -670,7 +720,7 @@ bl_info = {
 
 
 pbuild = PanelBuilder("mesh_refine_toolbox", "mesh_refine_toolbox_panel", \
-    [SurfaceSmooth_OP(), EdgeSmooth_OP(), CropToLarge_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP()])
+    [SurfaceSmooth_OP(), EdgeSmooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP(), CropToLarge_OP()])
 OBJECT_PT_ToolsAMB = pbuild.create_panel()
 
 def register():
