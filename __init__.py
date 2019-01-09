@@ -15,70 +15,23 @@
 # ##### END GPL LICENSE BLOCK #####
 
 # import/reload all source files
-if "bpy" in locals():
+if not "bpy" in locals():
+    from . import amb_utils as au
+    from . import amb_fastmesh as afm
+    from . import amb_bmesh as abm
+else:
     import importlib
     importlib.reload(au)
-else:
-    from . import amb_utils as au
+    importlib.reload(afm)
+    importlib.reload(abm)
 
-import bpy
 
+import bpy # pylint: disable=import-error
 import numpy as np
-import bpy
-import bmesh
+import bmesh # pylint: disable=import-error
 import random
-import cProfile, pstats, io
 from collections import defaultdict, OrderedDict
-import mathutils as mu
-
-#import numba
-
-
-def op_fraggle(mesh, thres, n):
-    verts = read_verts(mesh)
-    edges = read_edges(mesh)
-    edge_a, edge_b = edges[:,0], edges[:,1]
-    #for i in range(len(edge_a)):
-    #    fastverts[edge_a[i]] += tvec[i]*thres 
-    #    fastverts[edge_b[i]] -= tvec[i]*thres  
-    for _ in range(n):
-        tvec = verts[edge_b] - verts[edge_a]
-        #tvlen = np.linalg.norm(tvec, axis=1)
-        #tvec = (tvec.T / tvlen).T 
-        verts[edge_a] += tvec * thres 
-        verts[edge_b] -= tvec * thres 
-    write_verts(mesh, verts)
-
-
-def op_smooth_mask(verts, edges, mask, n):
-    #for e in edges:
-    #    edge_c[e[0]] += 1
-    #    edge_c[e[1]] += 1
-    edge_c = np.zeros(len(verts), dtype=np.int32)
-    e0_u, e0_c = np.unique(edges[:,0], return_counts=True)
-    e1_u, e1_c = np.unique(edges[:,1], return_counts=True)
-    edge_c[e0_u] += e0_c
-    edge_c[e1_u] += e1_c
-    edge_c = edge_c.T
-
-    new_verts = np.copy(verts)
-    new_verts = new_verts.T
-    mt1 = (1.0-mask).T
-    mt0 = mask.T
-    for xc in range(n):
-        # <new vert location> = sum(<connected locations>) / <number of connected locations>
-        locs = np.zeros((len(verts), 3), dtype=np.float64)
-        np.add.at(locs, edges[:,0], verts[edges[:,1]])
-        np.add.at(locs, edges[:,1], verts[edges[:,0]])
-
-        locs = locs.T
-        locs /= edge_c
-        locs *= mt1
-
-        new_verts *= mt0
-        new_verts += locs 
-
-    return new_verts.T
+import mathutils as mu # pylint: disable=import-error
 
 
 class Mesh_Operator(bpy.types.Operator):
@@ -113,7 +66,7 @@ class Mesh_Operator(bpy.types.Operator):
             try:
                 bpy.ops.object.modifier_apply(modifier=mod.name)
             except RuntimeError as ex:
-                b_print(ex)    
+                print(ex)    
 
         # run mesh operation
         mesh = context.active_object.data
@@ -134,7 +87,7 @@ class Mesh_Operator(bpy.types.Operator):
 
 
 def mesh_operator_factory(props, prefix, payload, name, parent_name):
-    return type('name', (Mesh_Operator,), 
+    return type(name, (Mesh_Operator,), 
         {**{'bl_idname' : "object." + parent_name + "_" + prefix,
         'bl_label' : " ".join(prefix.split("_")).capitalize(),
         'my_props' : props.keys(),
@@ -155,7 +108,7 @@ class PanelBuilder:
         self.master_panel = master_panel
         self.mesh_ops = mesh_ops
 
-    def create_panel(this):
+    def create_panel(this): # pylint: disable=E0213
         class _pt(bpy.types.Panel):
             bl_label = " ".join([i.capitalize() for i in this.master_name.split("_")])
             bl_idname = this.master_panel
@@ -180,7 +133,7 @@ class PanelBuilder:
                         else:
                             split.prop(context.scene, opname, text="", icon='RIGHTARROW')
 
-                    opr = split.operator(mop.op.bl_idname, text = " ".join(mop.prefix.split("_")).capitalize())
+                    split.operator(mop.op.bl_idname, text = " ".join(mop.prefix.split("_")).capitalize())
 
                     if getattr(context.scene, opname):
                         box = col.column(align=True).box().column()
@@ -202,10 +155,10 @@ class PanelBuilder:
     def unregister_params(self):
         for mesh_op in self.mesh_ops:
             bpy.utils.unregister_class(mesh_op.op)
-            for k, v in mesh_op.props.items():
+            for k, _ in mesh_op.props.items():
                 delattr(bpy.types.Scene, mesh_op.parent_name+"_"+mesh_op.prefix+"_"+k)
 
-        for k, v in self.panel.items():
+        for k, _ in self.panel.items():
             delattr(bpy.types.Scene, self.master_panel+"_"+k)
 
 
@@ -216,6 +169,11 @@ class Master_OP:
     def __init__(self):
         self.props = OrderedDict()
         self.parent_name = "mesh_refine_toolbox"
+
+        self.start_mode = ""
+        self.payload = lambda a, b, c: 0
+        self.prefix = ""
+        self.name = ""
 
         self.generate()
 
@@ -241,12 +199,12 @@ class Masked_Smooth_OP(Master_OP):
         self.start_mode = 'OBJECT'
 
         def _pl(self, mesh, context):
-            verts = au.read_verts(mesh)
-            edges = au.read_edges(mesh)
-            norms = au.read_norms(mesh)
+            verts = afm.read_verts(mesh)
+            edges = afm.read_edges(mesh)
+            norms = afm.read_norms(mesh)
 
-            curve = np.abs(au.calc_curvature(verts, edges, norms)-0.5)
-            curve = au.mesh_smooth_filter_variable(curve, verts, edges, 1)
+            curve = np.abs(afm.calc_curvature(verts, edges, norms)-0.5)
+            curve = afm.mesh_smooth_filter_variable(curve, verts, edges, 1)
             
             curve -= np.min(curve)
             curve /= np.max(curve)
@@ -255,11 +213,11 @@ class Masked_Smooth_OP(Master_OP):
 
             # don't move border
             if self.border:
-                curve = np.where(au.get_nonmanifold_verts(mesh), 1.0, curve)
+                curve = np.where(abm.get_nonmanifold_verts(mesh), 1.0, curve)
 
-            new_verts = op_smooth_mask(verts, edges, curve, self.iter)
+            new_verts = afm.op_smooth_mask(verts, edges, curve, self.iter)
 
-            au.write_verts(mesh, new_verts)
+            afm.write_verts(mesh, new_verts)
 
             mesh.update(calc_edges=True)
 
@@ -274,8 +232,8 @@ class CropToLarge_OP(Master_OP):
         self.start_mode = 'EDIT'
 
         def _pl(self, mesh, context):
-            with au.Bmesh_from_edit(mesh) as bm:
-                shells = au.mesh_get_edge_connection_shells(bm)
+            with abm.Bmesh_from_edit(mesh) as bm:
+                shells = abm.mesh_get_edge_connection_shells(bm)
                 print(len(shells), "shells")
 
                 for i in range(len(bm.faces)):
@@ -299,7 +257,7 @@ class MergeTiny_OP(Master_OP):
         self.start_mode = 'EDIT'
 
         def _pl(self, mesh, context):
-            with au.Bmesh_from_edit(mesh) as bm:
+            with abm.Bmesh_from_edit(mesh) as bm:
                 # thin faces
                 collapse_these = []
                 avg = sum(f.calc_perimeter() for f in bm.faces)/len(bm.faces)
@@ -322,7 +280,7 @@ class SurfaceSmooth_OP(Master_OP):
         self.start_mode = 'EDIT'
 
         def _pl(self, mesh, context):
-            with au.Bmesh_from_edit(mesh) as bm:
+            with abm.Bmesh_from_edit(mesh) as bm:
                 limit_verts = set([])
                 if self.border:
                     for e in bm.edges:
@@ -335,7 +293,7 @@ class SurfaceSmooth_OP(Master_OP):
                         if v.index in limit_verts:
                             continue
 
-                        ring1 = au.vert_vert(v)
+                        ring1 = abm.vert_vert(v)
                         projected = []
                         for rv in ring1:
                             nv = rv.co - v.co
@@ -362,7 +320,7 @@ class EdgeSmooth_OP(Master_OP):
         self.start_mode = 'EDIT'
 
         def _pl(self, mesh, context):
-            with au.Bmesh_from_edit(mesh) as bm:
+            with abm.Bmesh_from_edit(mesh) as bm:
                 limit_verts = set([])
                 if self.border:
                     for e in bm.edges:
@@ -386,7 +344,7 @@ class EdgeSmooth_OP(Master_OP):
                             continue
 
                         v_norm = normals[v.index]
-                        ring1 = au.vert_vert(v)
+                        ring1 = abm.vert_vert(v)
 
                         # get projected points on plane defined by v_norm
                         projected = []
@@ -479,7 +437,7 @@ class Mechanize_OP(Master_OP):
         self.start_mode = 'EDIT'
 
         def _pl(self, mesh, context):
-            with au.Bmesh_from_edit(mesh) as bm:
+            with abm.Bmesh_from_edit(mesh) as bm:
                 limit_verts = set([])
                 if self.border:
                     for e in bm.edges:
@@ -494,7 +452,7 @@ class Mechanize_OP(Master_OP):
 
                 ring1s = []
                 for v in bm.verts:
-                    ring1s.append(au.vert_vert(v))
+                    ring1s.append(abm.vert_vert(v))
 
                 for xx in range(self.iter):
                     print("iteration:", xx+1)
@@ -584,7 +542,7 @@ class Cleanup_OP(Master_OP):
         self.start_mode = 'EDIT'
         
         def _pl(self, mesh, context):
-            with au.Bmesh_from_edit(mesh) as bm:
+            with abm.Bmesh_from_edit(mesh) as bm:
                 # deselect all
                 for v in bm.verts:
                     v.select = False
@@ -646,7 +604,7 @@ class Cleanup_OP(Master_OP):
                     nonm_verts.add(e.verts[1].index)
 
                 for v in nonm_verts:
-                    for v in au.vert_vert(bm.verts[v]):
+                    for v in abm.vert_vert(bm.verts[v]):
                         v.select = True
 
                 # enum {
@@ -685,11 +643,11 @@ class Cleanup_OP(Master_OP):
                     all_faces = []
                     for _ in range(2):
                         bm.edges.ensure_lookup_table()
-                        loops = au.bmesh_get_boundary_edgeloops_from_selected(bm)
-                        new_faces, leftover_loops = au.bmesh_fill_from_loops(bm, loops)
+                        loops = abm.bmesh_get_boundary_edgeloops_from_selected(bm)
+                        new_faces, leftover_loops = abm.bmesh_fill_from_loops(bm, loops)
 
                         all_faces.extend(new_faces)
-                        au.bmesh_deselect_all(bm)
+                        abm.bmesh_deselect_all(bm)
 
                         for l in leftover_loops:
                             for e in l:
@@ -774,8 +732,8 @@ bl_info = {
     "description": "Various tools for mesh processing",
     "author": "ambi",
     "location": "3D view > Tools",
-    "version": (1, 1, 0),
-    "blender": (2, 79, 0)
+    "version": (1, 1, 1),
+    "blender": (2, 80, 0)
 }
 
 
