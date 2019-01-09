@@ -2,7 +2,7 @@ import numpy as np
 import bpy # pylint: disable=import-error
 import bmesh # pylint: disable=import-error
 import random
-import amb_fastmesh as afm
+from . import amb_fastmesh as afm
 
 def read_bmesh(bmesh):
     bmesh.verts.ensure_lookup_table()

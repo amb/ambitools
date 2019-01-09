@@ -115,14 +115,14 @@ class PanelBuilder:
 
             bl_space_type = 'VIEW_3D'
             bl_region_type = 'TOOLS'
-            bl_category = "Tools"
+            #bl_category = "Tools"
 
             def draw(self, context):
                 layout = self.layout
                 col = layout.column(align=True)
 
                 for mop in this.mesh_ops:
-                    split = col.split(percentage=0.15, align=True)
+                    split = col.split(factor=0.15, align=True)
                     opname = this.master_panel + "_" + mop.prefix
                     
                     if len(mop.props) == 0:
@@ -579,7 +579,7 @@ class Cleanup_OP(Master_OP):
                     if nm and c3:
                         delete_this.append(f)               
 
-                bmesh.ops.delete(bm, geom=delete_this, context=5)
+                bmesh.ops.delete(bm, geom=delete_this, context='FACES')
 
                 #if self.trifaces == False:
                 bm.edges.ensure_lookup_table()
@@ -618,7 +618,7 @@ class Cleanup_OP(Master_OP):
                 # };
 
                 delete_this = [bm.verts[v] for v in nonm_verts]
-                bmesh.ops.delete(bm, geom=delete_this, context=1)
+                bmesh.ops.delete(bm, geom=delete_this, context='VERTS')
 
                 # delete loose edges
                 bm.edges.ensure_lookup_table()
@@ -626,7 +626,7 @@ class Cleanup_OP(Master_OP):
                 for e in bm.edges:
                     if len(e.link_faces) == 0:
                         loose_edges.append(e)
-                bmesh.ops.delete(bm, geom=loose_edges, context=2)
+                bmesh.ops.delete(bm, geom=loose_edges, context='EDGES')
 
                 bm.edges.ensure_lookup_table()
                 bm.verts.ensure_lookup_table()
@@ -685,7 +685,7 @@ class Cleanup_OP(Master_OP):
                             delete_this.append(f)     
 
                     print(len(delete_this), "faces deleted after triface cleanup")
-                    bmesh.ops.delete(bm, geom=delete_this, context=5)
+                    bmesh.ops.delete(bm, geom=delete_this, context='FACES')
 
 
         self.payload = _pl
