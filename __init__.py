@@ -270,6 +270,31 @@ class MergeTiny_OP(Master_OP):
 
         self.payload = _pl
 
+
+class EvenEdges_OP(Master_OP):
+    def generate(self):
+        self.props['amount'] = bpy.props.FloatProperty(name="Amount", default=1.0, min=0.0, max=1.0)
+        self.props['iterations'] = bpy.props.IntProperty(name="Iterations", default=1, min=1, max=20)
+
+        self.prefix = "make_even_edges"
+        self.name = "OBJECT_OT_MakeEvenEdges"
+        self.start_mode = 'EDIT'
+
+        def _pl(self, mesh, context):
+            with abm.Bmesh_from_edit(mesh) as bm:
+                avg = sum(e.calc_length() for e in bm.edges)/len(bm.edges)
+                for _ in range(self.iterations):
+                    for e in bm.edges:
+                        grow = (avg - e.calc_length())/2*self.amount
+                        center = (e.verts[0].co + e.verts[1].co)/2
+                        e.verts[1].co += (e.verts[1].co-center).normalized()*grow
+                        e.verts[0].co += (e.verts[0].co-center).normalized()*grow
+
+
+
+        self.payload = _pl
+
+
 class SurfaceSmooth_OP(Master_OP):
     def generate(self):
         self.props['border'] = bpy.props.BoolProperty(name="Exclude border", default=True)
@@ -738,8 +763,8 @@ bl_info = {
 
 
 pbuild = PanelBuilder("mesh_refine_toolbox", "mesh_refine_toolbox_panel", \
-    #[Mechanize_OP(), SurfaceSmooth_OP(), EdgeSmooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP(), CropToLarge_OP()])
-    [Mechanize_OP(), SurfaceSmooth_OP(), Masked_Smooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), Cleanup_OP(), CropToLarge_OP()])
+    [Mechanize_OP(), SurfaceSmooth_OP(), Masked_Smooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), 
+     Cleanup_OP(), CropToLarge_OP(), EvenEdges_OP()])
 OBJECT_PT_ToolsAMB = pbuild.create_panel()
 
 def register():
