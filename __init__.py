@@ -114,7 +114,7 @@ class PanelBuilder:
             bl_idname = this.master_panel
 
             bl_space_type = 'VIEW_3D'
-            bl_region_type = 'TOOLS'
+            bl_region_type = 'UI'
             #bl_category = "Tools"
 
             def draw(self, context):
@@ -270,7 +270,6 @@ class MergeTiny_OP(Master_OP):
 
         self.payload = _pl
 
-
 class EvenEdges_OP(Master_OP):
     def generate(self):
         self.props['amount'] = bpy.props.FloatProperty(name="Amount", default=1.0, min=0.0, max=1.0)
@@ -290,10 +289,7 @@ class EvenEdges_OP(Master_OP):
                         e.verts[1].co += (e.verts[1].co-center).normalized()*grow
                         e.verts[0].co += (e.verts[0].co-center).normalized()*grow
 
-
-
         self.payload = _pl
-
 
 class SurfaceSmooth_OP(Master_OP):
     def generate(self):
@@ -715,41 +711,39 @@ class Cleanup_OP(Master_OP):
 
         self.payload = _pl
 
-class Test_OP(Master_OP):
+class MeshNoise_OP(Master_OP):
     def generate(self):
-        self.props['test'] = bpy.props.FloatProperty(name="Test", default=0.02, min=0.0, max=1.0)
+        self.props['amount'] = bpy.props.FloatProperty(name="Amount", default=1.0, min=-1000.0, max=1000.0)
+        self.props['scale'] = bpy.props.FloatProperty(name="Scale", default=1.0, min=0.0, max=1000.0)
+        self.props['noisetype']= bpy.props.EnumProperty(
+            items = [('DISTANCE','Distance','','',0), 
+                    ('CHEBYCHEV','Chebychev','','',1),
+                    ('MANHATTAN','Manhattan','','',2),],
+            name = "Type",
+            default = 'CHEBYCHEV')
+        self.props['noisef']= bpy.props.EnumProperty(
+            items = [('21','F2-F1','','',0), 
+                    ('1','F1','','',1),
+                    ('2','F2','','',2),],
+            name = "Feature",
+            default = '21')
 
-        self.prefix = "test"
-        self.name = "OBJECT_OT_Test"
+        self.prefix = "mesh_noise"
+        self.name = "OBJECT_OT_MeshNoise"
+        self.start_mode = 'EDIT'
 
-        #@numba.jit
         def _pl(self, mesh, context):
-            print("hello")
-            
-            # def sum2(two_dimensional_array):    
-            #     result = 0.0
-            #     J, I = two_dimensional_array.shape    
-            #     for i in range(J):
-            #         for j in range(I):
-            #             result += two_dimensional_array[i,j]    
-            #     return result
-            # print(sum2(np.array([[1,2],[3,4]])))
-            
-            bm = bmesh.new()
-            bm.from_mesh(mesh)
-            bm.verts.ensure_lookup_table()
+            with abm.Bmesh_from_edit(mesh) as bm:
+                df = None
+                if self.noisef == '21': df = lambda x: x[1]-x[0] 
+                if self.noisef == '1': df = lambda x: x[0] 
+                if self.noisef == '2': df = lambda x: x[1] 
 
-            for v in bm.verts:
-                bm.verts[v.index].co += mu.Vector([0.1,0.0,0.0])
-
-            bm.to_mesh(mesh)
-
-            bm.free()
-
-            mesh.update(calc_edges=True)
+                for v in bm.verts:
+                    d, _ = mu.noise.voronoi(v.co * self.scale, distance_metric=self.noisetype, exponent=2.5) 
+                    v.co += v.normal * df(d) * self.amount
 
         self.payload = _pl
-
 
 bl_info = {
     "name": "Mesh Refine Toolbox",
@@ -764,7 +758,7 @@ bl_info = {
 
 pbuild = PanelBuilder("mesh_refine_toolbox", "mesh_refine_toolbox_panel", \
     [Mechanize_OP(), SurfaceSmooth_OP(), Masked_Smooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), 
-     Cleanup_OP(), CropToLarge_OP(), EvenEdges_OP()])
+     Cleanup_OP(), CropToLarge_OP(), EvenEdges_OP(), MeshNoise_OP()])
 OBJECT_PT_ToolsAMB = pbuild.create_panel()
 
 def register():
