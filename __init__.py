@@ -745,20 +745,157 @@ class MeshNoise_OP(Master_OP):
 
         self.payload = _pl
 
+class EdgesToCurve_OP(Master_OP):
+    def generate(self):
+        self.props['balance'] = bpy.props.FloatProperty(name="Balance", default=0.99, min=0.0, max=1.0)
+
+        self.prefix = "optimal_edge_flip"
+        self.name = "OBJECT_OT_EdgesToCurve"
+        self.start_mode = 'EDIT'
+
+        def _pl(self, mesh, context):
+            with abm.Bmesh_from_edit(mesh) as bm:
+                traversed = np.zeros((len(bm.edges)), dtype=np.bool)
+                for e in bm.edges:
+                    if traversed[e.index]:
+                        continue 
+
+                    f = e.link_faces
+                    # only if edge has two faces connected
+                    if len(f) == 2:
+                        # mark all both faces edges as traversed
+                        for n in range(2):
+                            for i in f[n].edges:
+                                traversed[i.index] = True
+
+                        e_len = e.calc_length()
+
+                        # whats the max number edge can be rotated on the 2-face plane
+                        max_rots = min(len(f[0].edges)-2, len(f[1].edges)-2)
+
+                        # initial fit (find lowest angle between edge vert normals)
+                        # vs. edge length
+                        v0 = e.verts[0]
+                        v1 = e.verts[1]
+                        best = e_len*((v0.normal.dot(v1.normal)+1)/2)*self.balance + \
+                            (e_len/(v0.co-v1.co).length)*(1.0-self.balance)
+                        rotations = 0
+
+                        # select vert that from which you take the next step doesn't end
+                        # on a vert on the edge <e> (for each face loop)
+                        # so that we have the first rotated edge position
+
+                        fvi = [0, 0] 
+                        for n in range(2):
+                            fvi[n] = [i for i, fv in enumerate(f[n].verts) if e.verts[0] == fv][0]
+                            n_step = (fvi[n]+1) % len(f[n].verts)
+                            if f[n].verts[n_step] == e.verts[1]:
+                                fvi[n] = n_step
+
+                        for r in range(max_rots):
+                            fvi[0] = (fvi[0]+1) % len(f[0].verts)
+                            fvi[1] = (fvi[1]+1) % len(f[1].verts)
+
+                            v0 = f[0].verts[fvi[0]]
+                            v1 = f[1].verts[fvi[1]]
+
+                            if v0 == v1:
+                                continue
+
+                            new_calc = e_len*((v0.normal.dot(v1.normal)+1)/2)*self.balance + \
+                                (e_len/(v0.co-v1.co).length)*(1.0-self.balance)
+
+                            if new_calc > best:
+                                best = new_calc
+                                rotations = r+1
+
+                        # flip edge to optimal location
+                        te = e
+                        for _ in range(rotations):
+                            te = bmesh.utils.edge_rotate(te, True)
+                            if te == None:
+                                break
+
+
+
+
+        self.payload = _pl
+
+class SplitQuads_OP(Master_OP):
+    def generate(self):
+        self.props['thres'] = bpy.props.FloatProperty(name="Threshold", default=0.5, min=0.0, max=1.0)
+        self.props['normals'] = bpy.props.BoolProperty(name="Use Normals", default=False)
+
+        self.prefix = "split_quads"
+        self.name = "OBJECT_OT_SplitQuads"
+        self.start_mode = 'EDIT'
+
+        def _pl(self, mesh, context):
+            with abm.Bmesh_from_edit(mesh) as bm:
+                for f in bm.faces:
+                    # for all quads
+                    if len(f.edges) == 4:
+                        # quad:
+                        #  0
+                        # 3 1
+                        #  2
+
+                        v = [i for i in f.verts]
+
+                        # get two possible cut configurations
+                        # either cut v[0],v[2] or v[1],v[3]
+
+                        if not self.normals:
+                            # case: v[0],v[2]
+                            vec10 = v[0].co - v[1].co
+                            vec12 = v[2].co - v[1].co
+                            # note: ccw cross product
+                            crp102 = vec10.normalized().cross(vec12.normalized())
+
+                            vec30 = v[0].co - v[3].co
+                            vec32 = v[2].co - v[3].co
+                            crp302 = vec32.normalized().cross(vec30.normalized())
+
+                            case02 = crp102.dot(crp302)
+
+                            # case: v[1],v[3]
+                            vec01 = v[1].co - v[0].co
+                            vec03 = v[3].co - v[0].co
+                            crp013 = vec01.normalized().cross(vec03.normalized())
+
+                            vec21 = v[1].co - v[2].co
+                            vec23 = v[3].co - v[2].co
+                            crp213 = vec21.normalized().cross(vec23.normalized())
+
+                            case13 = crp013.dot(crp213)
+                        else:
+                            case02 = v[0].normal.dot(v[2].normal)
+                            case13 = v[1].normal.dot(v[3].normal)
+
+                        if abs(case02) < self.thres or abs(case13) < self.thres:
+                            if abs(case02) > abs(case13):
+                                bmesh.utils.face_split(f, v[0], v[2])
+                            else:
+                                bmesh.utils.face_split(f, v[1], v[3])
+
+
+        self.payload = _pl
+
 bl_info = {
     "name": "Mesh Refine Toolbox",
     "category": "Mesh",
     "description": "Various tools for mesh processing",
     "author": "ambi",
     "location": "3D view > Tools",
-    "version": (1, 1, 1),
+    "version": (1, 1, 2),
     "blender": (2, 80, 0)
 }
 
 
 pbuild = PanelBuilder("mesh_refine_toolbox", "mesh_refine_toolbox_panel", \
     [Mechanize_OP(), SurfaceSmooth_OP(), Masked_Smooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), 
-     Cleanup_OP(), CropToLarge_OP(), EvenEdges_OP(), MeshNoise_OP()])
+     Cleanup_OP(), CropToLarge_OP(), EvenEdges_OP(), MeshNoise_OP(), EdgesToCurve_OP(),
+     SplitQuads_OP()])
 OBJECT_PT_ToolsAMB = pbuild.create_panel()
 
 def register():
