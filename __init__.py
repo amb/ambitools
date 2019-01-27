@@ -48,7 +48,7 @@ class Mesh_Operator(bpy.types.Operator):
         pass
 
     def invoke(self, context, event):
-        self.pr = au.profiling_start()
+        #self.pr = au.profiling_start()
 
         # copy property values from panel to operator
         print(self.prefix, self.my_props)
@@ -73,7 +73,7 @@ class Mesh_Operator(bpy.types.Operator):
         self.payload(mesh, context)
         #mesh.update(calc_edges=True)
 
-        au.profiling_end(self.pr)
+        #au.profiling_end(self.pr)
 
         return {'FINISHED'}
 
@@ -85,7 +85,6 @@ class Mesh_Operator(bpy.types.Operator):
             row = col.row()
             row.prop(self, p, expand=True)
 
-
 def mesh_operator_factory(props, prefix, payload, name, parent_name):
     return type(name, (Mesh_Operator,), 
         {**{'bl_idname' : "object." + parent_name + "_" + prefix,
@@ -95,7 +94,6 @@ def mesh_operator_factory(props, prefix, payload, name, parent_name):
         'parent_name' : parent_name,
         'payload' : payload
         }, ** props})
-
 
 class PanelBuilder:
     def __init__(self, master_name, master_panel, mesh_ops):
@@ -881,6 +879,53 @@ class SplitQuads_OP(Master_OP):
 
         self.payload = _pl
 
+class RebuildQuads_OP(Master_OP):
+    def generate(self):
+        self.props['decimate'] = bpy.props.FloatProperty(name="Decimate", default=0.1, min=0.0, max=1.0)
+        self.props['quadstep'] = bpy.props.FloatProperty(name="Quad Angle", default=4.0, min=0.0, max=4.0)
+        self.props['smooth'] = bpy.props.BoolProperty(name="Smooth", default=True)
+
+        self.prefix = "rebuild_quads"
+        self.name = "OBJECT_OT_RebuildQuads"
+        self.start_mode = 'OBJECT'
+
+        def _pl(self, mesh, context):
+            ob = context.object
+
+            temp_object = ob.copy()
+            temp_object.data = ob.data.copy()
+            temp_object.animation_data_clear()
+
+            m_decimate = ob.modifiers.new(name="Decimate", type='DECIMATE')
+            m_decimate.ratio = self.decimate
+
+            bpy.ops.object.modifier_apply(modifier=m_decimate.name)
+
+            if self.smooth:
+                bpy.ops.object.mesh_refine_toolbox_surface_smooth(border=True, iter=2)
+
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='SELECT')
+            bpy.ops.mesh.tris_convert_to_quads(face_threshold=self.quadstep, shape_threshold=self.quadstep)
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+            m_subd = ob.modifiers.new(name="Subd", type='SUBSURF')
+            m_swrp = ob.modifiers.new(name="Shrinkwrap", type='SHRINKWRAP')
+            #m_swrp.wrap_method = 'PROJECT'
+            #m_swrp.cull_face = 'FRONT'
+            m_swrp.target = temp_object
+
+            for mod in context.object.modifiers:
+                bpy.ops.object.modifier_apply(modifier=mod.name)
+
+            meshname = temp_object.data.name
+            objs = bpy.data.objects
+            objs.remove(objs[temp_object.name], do_unlink=True)
+            meshes = bpy.data.meshes
+            meshes.remove(meshes[meshname], do_unlink=True)
+
+        self.payload = _pl
+
 bl_info = {
     "name": "Mesh Refine Toolbox",
     "category": "Mesh",
@@ -895,7 +940,7 @@ bl_info = {
 pbuild = PanelBuilder("mesh_refine_toolbox", "mesh_refine_toolbox_panel", \
     [Mechanize_OP(), SurfaceSmooth_OP(), Masked_Smooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), 
      Cleanup_OP(), CropToLarge_OP(), EvenEdges_OP(), MeshNoise_OP(), EdgesToCurve_OP(),
-     SplitQuads_OP()])
+     SplitQuads_OP(), RebuildQuads_OP()])
 OBJECT_PT_ToolsAMB = pbuild.create_panel()
 
 def register():
