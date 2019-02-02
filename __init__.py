@@ -85,12 +85,13 @@ class Mesh_Operator(bpy.types.Operator):
             row = col.row()
             row.prop(self, p, expand=True)
 
-def mesh_operator_factory(props, prefix, payload, name, parent_name):
+def mesh_operator_factory(props, prefix, payload, name, parent_name, info):
     return type(name, (Mesh_Operator,), 
         {**{'bl_idname' : "object." + parent_name + "_" + prefix,
         'bl_label' : " ".join(prefix.split("_")).capitalize(),
+        'bl_description' : info,
         'my_props' : props.keys(),
-        'prefix' : prefix,
+        'prefix' : prefix, 
         'parent_name' : parent_name,
         'payload' : payload
         }, ** props})
@@ -171,6 +172,7 @@ class Master_OP:
         self.payload = lambda a, b, c: 0
         self.prefix = ""
         self.name = ""
+        self.info = ""
 
         self.generate()
 
@@ -192,7 +194,8 @@ class Master_OP:
             return _f
         self.payload = _mode_switch(self.payload)
 
-        self.op = mesh_operator_factory(self.props, self.prefix, self.payload, self.name, self.parent_name)
+        self.op = mesh_operator_factory(self.props, self.prefix, self.payload, self.name, 
+            self.parent_name, self.info)
 
 class Masked_Smooth_OP(Master_OP):
     def generate(self):
@@ -235,6 +238,7 @@ class CropToLarge_OP(Master_OP):
 
         self.prefix = "crop_to_large"
         self.name = "OBJECT_OT_CropToLarge"
+        self.info = "Removes all tiniest disconnected pieces up to specified amount"
 
         def _pl(self, bm, context):
             shells = abm.mesh_get_edge_connection_shells(bm)
@@ -265,6 +269,7 @@ class MergeTiny_OP(Master_OP):
 
         self.prefix = "merge_tiny_faces"
         self.name = "OBJECT_OT_MergeTinyFaces"
+        self.info = "Collapse faces with smaller perimeter than defined"
 
         def _pl(self, bm, context):
             # thin faces
@@ -286,6 +291,7 @@ class EvenEdges_OP(Master_OP):
 
         self.prefix = "make_even_edges"
         self.name = "OBJECT_OT_MakeEvenEdges"
+        self.info = "Attempts to equalize edge lengths"
 
         def _pl(self, bm, context):
             avg = sum(e.calc_length() for e in bm.edges)/len(bm.edges)
@@ -305,6 +311,7 @@ class SurfaceSmooth_OP(Master_OP):
 
         self.prefix = "surface_smooth"
         self.name = "OBJECT_OT_SurfaceSmooth"
+        self.info = "Smoothing along mesh surface"
 
         def _pl(self, bm, context):
             limit_verts = set([])
@@ -458,6 +465,7 @@ class Mechanize_OP(Master_OP):
 
         self.prefix = "mechanize"
         self.name = "OBJECT_OT_Mechanize"
+        self.info = "Artistic mesh processing, going for a chiseled look"
 
         def _pl(self, bm, context):
             limit_verts = set([])
@@ -514,6 +522,7 @@ class CleanupThinFace_OP(Master_OP):
 
         self.prefix = "cleanup_thin_faces"
         self.name = "OBJECT_OT_CleanupThinFace"
+        self.info = "Collapse thin faces"
 
         def _pl(self, bm, context):
             thr = self.threshold
@@ -555,6 +564,7 @@ class Cleanup_OP(Master_OP):
         self.props['fillface'] = bpy.props.BoolProperty(name="Fill faces", default=True)
         self.prefix = "cleanup_triface"
         self.name = "OBJECT_OT_CleanupTriface"
+        self.info = "Removes all edges with more than two faces and tries to rebuild the surrounding mesh"
         
         def _pl(self, bm, context):
             # deselect all
@@ -723,6 +733,7 @@ class MeshNoise_OP(Master_OP):
 
         self.prefix = "mesh_noise"
         self.name = "OBJECT_OT_MeshNoise"
+        self.info = "Various noise functions that can be instantly applied on the mesh"
 
         def _pl(self, bm, context):
             df = None
@@ -744,6 +755,7 @@ class EdgesToCurve_OP(Master_OP):
 
         self.prefix = "optimal_edge_flip"
         self.name = "OBJECT_OT_EdgesToCurve"
+        self.info = "Rotates edges to find optimal local curvature description"
 
         def _pl(self, bm, context):
             traversed = np.zeros((len(bm.edges)), dtype=np.bool)
@@ -819,6 +831,7 @@ class SplitQuads_OP(Master_OP):
 
         self.prefix = "split_quads"
         self.name = "OBJECT_OT_SplitQuads"
+        self.info = "Triangulates quads, using thresholds and angles"
 
         def _pl(self, bm, context):
             for f in bm.faces:
@@ -879,6 +892,8 @@ class RebuildQuads_OP(Master_OP):
 
         self.prefix = "rebuild_quads"
         self.name = "OBJECT_OT_RebuildQuads"
+        self.info = "Rebuilds mesh with quads by first decimating and making quads from triangles.\n" \
+            "Then subdividing and projecting to surface with shrinkwrap"
 
         def _pl(self, bm, context):
             bpy.ops.object.mode_set(mode='OBJECT')
@@ -925,6 +940,7 @@ class RemoveTwoBorder_OP(Master_OP):
     def generate(self):
         self.prefix = "remove_two_border"
         self.name = "OBJECT_OT_RemoveTwoBorder"
+        self.info = "Removes all faces that have more than two non-manifold borders"
 
         def _pl(self, bm, context):
             selected_faces = []
