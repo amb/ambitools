@@ -124,7 +124,7 @@ class PanelBuilder:
                     opname = this.master_panel + "_" + mop.prefix
                     
                     if len(mop.props) == 0:
-                        split.prop(context.scene, opname, text="", icon='LINK')
+                        split.prop(context.scene, opname, text="", icon='DOT')
                     else:
                         if getattr(context.scene, opname):
                             split.prop(context.scene, opname, text="", icon='DOWNARROW_HLT')
@@ -168,23 +168,31 @@ class Master_OP:
         self.props = OrderedDict()
         self.parent_name = "mesh_refine_toolbox"
 
-        self.start_mode = ""
         self.payload = lambda a, b, c: 0
         self.prefix = ""
         self.name = ""
 
         self.generate()
 
-        if hasattr(self, 'start_mode'):
-            def _wrap(this, mesh, context):
-                mode = context.object.mode
-                bpy.ops.object.mode_set(mode = self.start_mode)
-                self.payload(this, mesh, context)
-                bpy.ops.object.mode_set(mode = mode)
+        # wrap Bmesh
+        def _bm_from_selected(ifunc):
+            def _f(this, mesh, context):
+                with abm.Bmesh_from_edit(mesh) as bm:
+                    ifunc(this, bm, context)
+            return _f
+        self.payload = _bm_from_selected(self.payload)
 
-            self.op = mesh_operator_factory(self.props, self.prefix, _wrap, self.name, self.parent_name)
-        else:
-            self.op = mesh_operator_factory(self.props, self.prefix, self.payload, self.name, self.parent_name)
+        # wrap mode switching
+        def _mode_switch(ifunc):
+            def _f(this, mesh, context):
+                mode = context.object.mode
+                bpy.ops.object.mode_set(mode = 'EDIT')
+                ifunc(this, mesh, context)
+                bpy.ops.object.mode_set(mode = mode)
+            return _f
+        self.payload = _mode_switch(self.payload)
+
+        self.op = mesh_operator_factory(self.props, self.prefix, self.payload, self.name, self.parent_name)
 
 class Masked_Smooth_OP(Master_OP):
     def generate(self):
@@ -227,22 +235,27 @@ class CropToLarge_OP(Master_OP):
 
         self.prefix = "crop_to_large"
         self.name = "OBJECT_OT_CropToLarge"
-        self.start_mode = 'EDIT'
 
-        def _pl(self, mesh, context):
-            with abm.Bmesh_from_edit(mesh) as bm:
-                shells = abm.mesh_get_edge_connection_shells(bm)
-                print(len(shells), "shells")
+        def _pl(self, bm, context):
+            shells = abm.mesh_get_edge_connection_shells(bm)
+            print(len(shells), "shells")
 
-                for i in range(len(bm.faces)):
-                    bm.faces[i].select = True
+            for i in range(len(bm.faces)):
+                bm.faces[i].select = True
 
-                delete_this = list(sorted(shells, key=lambda x: -len(x)))[:self.shells]
-                for s in delete_this:
-                    for f in s:
-                        bm.faces[f.index].select = False
+            # delete_this = list(sorted(shells, key=lambda x: -len(x)))[:self.shells]
+            # for s in delete_this:
+            #     for f in s:
+            #         bm.faces[f.index].select = False
 
-            bpy.ops.mesh.delete(type='FACE')
+            sorted_shells = list(sorted(shells, key=lambda x: len(x)))
+            selected_faces = []
+            for s in sorted_shells[self.shells:]:
+                for f in s:
+                    selected_faces.append(bm.faces[f.index])
+
+            bmesh.ops.delete(bm, geom=list(set(selected_faces)), context='FACES')
+            #bpy.ops.mesh.delete(type='FACE')
 
         self.payload = _pl
 
@@ -252,19 +265,17 @@ class MergeTiny_OP(Master_OP):
 
         self.prefix = "merge_tiny_faces"
         self.name = "OBJECT_OT_MergeTinyFaces"
-        self.start_mode = 'EDIT'
 
-        def _pl(self, mesh, context):
-            with abm.Bmesh_from_edit(mesh) as bm:
-                # thin faces
-                collapse_these = []
-                avg = sum(f.calc_perimeter() for f in bm.faces)/len(bm.faces)
-                for f in bm.faces:
-                    if f.calc_perimeter() < avg * self.threshold:
-                        collapse_these.extend(f.edges)
+        def _pl(self, bm, context):
+            # thin faces
+            collapse_these = []
+            avg = sum(f.calc_perimeter() for f in bm.faces)/len(bm.faces)
+            for f in bm.faces:
+                if f.calc_perimeter() < avg * self.threshold:
+                    collapse_these.extend(f.edges)
 
-                bmesh.ops.collapse(bm, edges=list(set(collapse_these)))
-                bmesh.ops.connect_verts_concave(bm, faces=bm.faces)
+            bmesh.ops.collapse(bm, edges=list(set(collapse_these)))
+            bmesh.ops.connect_verts_concave(bm, faces=bm.faces)
 
         self.payload = _pl
 
@@ -275,17 +286,15 @@ class EvenEdges_OP(Master_OP):
 
         self.prefix = "make_even_edges"
         self.name = "OBJECT_OT_MakeEvenEdges"
-        self.start_mode = 'EDIT'
 
-        def _pl(self, mesh, context):
-            with abm.Bmesh_from_edit(mesh) as bm:
-                avg = sum(e.calc_length() for e in bm.edges)/len(bm.edges)
-                for _ in range(self.iterations):
-                    for e in bm.edges:
-                        grow = (avg - e.calc_length())/2*self.amount
-                        center = (e.verts[0].co + e.verts[1].co)/2
-                        e.verts[1].co += (e.verts[1].co-center).normalized()*grow
-                        e.verts[0].co += (e.verts[0].co-center).normalized()*grow
+        def _pl(self, bm, context):
+            avg = sum(e.calc_length() for e in bm.edges)/len(bm.edges)
+            for _ in range(self.iterations):
+                for e in bm.edges:
+                    grow = (avg - e.calc_length())/2*self.amount
+                    center = (e.verts[0].co + e.verts[1].co)/2
+                    e.verts[1].co += (e.verts[1].co-center).normalized()*grow
+                    e.verts[0].co += (e.verts[0].co-center).normalized()*grow
 
         self.payload = _pl
 
@@ -296,35 +305,33 @@ class SurfaceSmooth_OP(Master_OP):
 
         self.prefix = "surface_smooth"
         self.name = "OBJECT_OT_SurfaceSmooth"
-        self.start_mode = 'EDIT'
 
-        def _pl(self, mesh, context):
-            with abm.Bmesh_from_edit(mesh) as bm:
-                limit_verts = set([])
-                if self.border:
-                    for e in bm.edges:
-                        if len(e.link_faces) < 2:
-                            limit_verts.add(e.verts[0].index)
-                            limit_verts.add(e.verts[1].index)
+        def _pl(self, bm, context):
+            limit_verts = set([])
+            if self.border:
+                for e in bm.edges:
+                    if len(e.link_faces) < 2:
+                        limit_verts.add(e.verts[0].index)
+                        limit_verts.add(e.verts[1].index)
 
-                for _ in range(self.iter):
-                    for v in bm.verts:
-                        if v.index in limit_verts:
-                            continue
+            for _ in range(self.iter):
+                for v in bm.verts:
+                    if v.index in limit_verts:
+                        continue
 
-                        ring1 = abm.vert_vert(v)
-                        projected = []
-                        for rv in ring1:
-                            nv = rv.co - v.co
-                            dist = nv.dot(v.normal)
-                            projected.append(rv.co-dist*v.normal)
+                    ring1 = abm.vert_vert(v)
+                    projected = []
+                    for rv in ring1:
+                        nv = rv.co - v.co
+                        dist = nv.dot(v.normal)
+                        projected.append(rv.co-dist*v.normal)
 
-                        new_loc = mu.Vector([0.0, 0.0, 0.0])
-                        for p in projected:
-                            new_loc += p
-                        new_loc /= len(projected)
+                    new_loc = mu.Vector([0.0, 0.0, 0.0])
+                    for p in projected:
+                        new_loc += p
+                    new_loc /= len(projected)
 
-                        v.co = new_loc
+                    v.co = new_loc
 
         self.payload = _pl
 
@@ -336,111 +343,109 @@ class EdgeSmooth_OP(Master_OP):
 
         self.prefix = "edge_smooth"
         self.name = "OBJECT_OT_EdgeSmooth"
-        self.start_mode = 'EDIT'
 
-        def _pl(self, mesh, context):
-            with abm.Bmesh_from_edit(mesh) as bm:
-                limit_verts = set([])
-                if self.border:
-                    for e in bm.edges:
-                        if len(e.link_faces) < 2:
-                            limit_verts.add(e.verts[0].index)
-                            limit_verts.add(e.verts[1].index)
+        def _pl(self, bm, context):
+            limit_verts = set([])
+            if self.border:
+                for e in bm.edges:
+                    if len(e.link_faces) < 2:
+                        limit_verts.add(e.verts[0].index)
+                        limit_verts.add(e.verts[1].index)
 
-                # record initial normal field
-                normals = []
+            # record initial normal field
+            normals = []
+            for v in bm.verts:
+                normals.append(v.normal)
+
+            thr = self.thres
+
+            for _ in range(self.iter):
+                # project surrounding verts to normal plane and move <v> to center
+                new_verts = []
                 for v in bm.verts:
-                    normals.append(v.normal)
+                    new_verts.append(v.co)
+                    if v.index in limit_verts:
+                        continue
 
-                thr = self.thres
+                    v_norm = normals[v.index]
+                    ring1 = abm.vert_vert(v)
 
-                for _ in range(self.iter):
-                    # project surrounding verts to normal plane and move <v> to center
-                    new_verts = []
-                    for v in bm.verts:
-                        new_verts.append(v.co)
-                        if v.index in limit_verts:
-                            continue
+                    # get projected points on plane defined by v_norm
+                    projected = []
+                    n_diff = []
+                    for rv in ring1:
+                        nv = rv.co-v.co
+                        dist = nv.dot(v_norm)
+                        projected.append(rv.co-dist*v_norm)
+                        n_diff.append(rv.co-projected[-1])
+                        
+                    # get approximate co-planar verts
+                    coplanar = []
+                    discord = []
+                    for i, rv in enumerate(ring1):
+                        r_norm = normals[rv.index]
+                        if r_norm.dot(v_norm) > thr:
+                            coplanar.append((i,rv))
+                        else:
+                            discord.append((i,rv))
 
-                        v_norm = normals[v.index]
-                        ring1 = abm.vert_vert(v)
+                    for i, rv in discord:
+                        # project 2-plane intersection instead of location
+                        # which direction is the point? (on the v.normal plane)
+                        # make it a 1.0 length vector
+                        p = projected[i]
+                        p = (p-v.co).normalized()
 
-                        # get projected points on plane defined by v_norm
-                        projected = []
-                        n_diff = []
-                        for rv in ring1:
-                            nv = rv.co-v.co
-                            dist = nv.dot(v_norm)
-                            projected.append(rv.co-dist*v_norm)
-                            n_diff.append(rv.co-projected[-1])
+                        # v + n*p = <the normal plane of rv>, find n
+                        d = r_norm.dot(p)
+                        # if abs(d) > 1e-6:
+                        if d > 1e-6:
+                            w = v.co - rv.co
+                            fac = r_norm.dot(w)/d
+                            u = p * fac
+
+                            # sanity limit for movement length
+                            # this doesn't actually prevent the explosion
+                            # just makes it a little more pleasing to look at 
+                            dist = v.co-rv.co
+                            if u.length > dist.length:
+                                u = u*dist.length/u.length
                             
-                        # get approximate co-planar verts
-                        coplanar = []
-                        discord = []
-                        for i, rv in enumerate(ring1):
-                            r_norm = normals[rv.index]
-                            if r_norm.dot(v_norm) > thr:
-                                coplanar.append((i,rv))
-                            else:
-                                discord.append((i,rv))
+                            projected[i] = v.co + u
+                            #projected = [v.co + u]
+                            break
+                        else:
+                            projected[i] = v.co
 
-                        for i, rv in discord:
-                            # project 2-plane intersection instead of location
-                            # which direction is the point? (on the v.normal plane)
-                            # make it a 1.0 length vector
-                            p = projected[i]
-                            p = (p-v.co).normalized()
+                    final_norm = v_norm
+                    for i, rv in coplanar:
+                        final_norm += r_norm
 
-                            # v + n*p = <the normal plane of rv>, find n
-                            d = r_norm.dot(p)
-                            # if abs(d) > 1e-6:
-                            if d > 1e-6:
-                                w = v.co - rv.co
-                                fac = r_norm.dot(w)/d
-                                u = p * fac
+                    normals[v.index] = final_norm.normalized()
 
-                                # sanity limit for movement length
-                                # this doesn't actually prevent the explosion
-                                # just makes it a little more pleasing to look at 
-                                dist = v.co-rv.co
-                                if u.length > dist.length:
-                                    u = u*dist.length/u.length
-                                
-                                projected[i] = v.co + u
-                                #projected = [v.co + u]
-                                break
-                            else:
-                                projected[i] = v.co
+                    if len(projected) > 0:
+                        new_loc = mu.Vector([0.0, 0.0, 0.0])
+                        for p in projected:
+                            new_loc += p
+                        new_verts[-1] = new_loc / len(projected)
 
-                        final_norm = v_norm
-                        for i, rv in coplanar:
-                            final_norm += r_norm
+                    # move towards average valid 1-ring plane
+                    # TODO: this should project to new normal (from coplanar norms), not old v.normal
+                    # new_verts[-1] = v.co
+                    # if len(coplanar) > 0:
+                    #     total = mu.Vector([0.0, 0.0, 0.0])
+                    #     for i, rv in coplanar: 
+                    #         total += n_diff[i]
+                    #     total /= len(coplanar)
+                    #     new_verts[-1] += total                     
 
-                        normals[v.index] = final_norm.normalized()
+                        
 
-                        if len(projected) > 0:
-                            new_loc = mu.Vector([0.0, 0.0, 0.0])
-                            for p in projected:
-                                new_loc += p
-                            new_verts[-1] = new_loc / len(projected)
+                # finally set new values for verts
+                for i, v in enumerate(bm.verts):
+                    v.co = new_verts[i]
 
-                        # move towards average valid 1-ring plane
-                        # TODO: this should project to new normal (from coplanar norms), not old v.normal
-                        # new_verts[-1] = v.co
-                        # if len(coplanar) > 0:
-                        #     total = mu.Vector([0.0, 0.0, 0.0])
-                        #     for i, rv in coplanar: 
-                        #         total += n_diff[i]
-                        #     total /= len(coplanar)
-                        #     new_verts[-1] += total                     
-
-                            
-
-                    # finally set new values for verts
-                    for i, v in enumerate(bm.verts):
-                        v.co = new_verts[i]
-
-                bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+            bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
 
             #mesh.update(calc_edges=True)
 
@@ -453,54 +458,52 @@ class Mechanize_OP(Master_OP):
 
         self.prefix = "mechanize"
         self.name = "OBJECT_OT_Mechanize"
-        self.start_mode = 'EDIT'
 
-        def _pl(self, mesh, context):
-            with abm.Bmesh_from_edit(mesh) as bm:
-                limit_verts = set([])
-                if self.border:
-                    for e in bm.edges:
-                        if len(e.link_faces) < 2:
-                            limit_verts.add(e.verts[0].index)
-                            limit_verts.add(e.verts[1].index)
+        def _pl(self, bm, context):
+            limit_verts = set([])
+            if self.border:
+                for e in bm.edges:
+                    if len(e.link_faces) < 2:
+                        limit_verts.add(e.verts[0].index)
+                        limit_verts.add(e.verts[1].index)
 
-                ok_verts = []
-                for v in bm.verts:
-                    if v.index not in limit_verts:
-                        ok_verts.append(v)
+            ok_verts = []
+            for v in bm.verts:
+                if v.index not in limit_verts:
+                    ok_verts.append(v)
 
-                ring1s = []
-                for v in bm.verts:
-                    ring1s.append(abm.vert_vert(v))
+            ring1s = []
+            for v in bm.verts:
+                ring1s.append(abm.vert_vert(v))
 
-                for xx in range(self.iter):
-                    print("iteration:", xx+1)
-                    for v in ok_verts:
-                        ring1 = ring1s[v.index]
-                        projected = []
-                        distances = []
-                        for rv in ring1:
-                            nv = rv.co - v.co
-                            dist = nv.dot(v.normal)
-                            distances.append(abs(dist)/nv.length)
-                            projected.append(rv.co-dist*v.normal)
+            for xx in range(self.iter):
+                print("iteration:", xx+1)
+                for v in ok_verts:
+                    ring1 = ring1s[v.index]
+                    projected = []
+                    distances = []
+                    for rv in ring1:
+                        nv = rv.co - v.co
+                        dist = nv.dot(v.normal)
+                        distances.append(abs(dist)/nv.length)
+                        projected.append(rv.co-dist*v.normal)
 
-                        # dist_min = min(distances)
-                        # for i in range(len(distances)):
-                        #     distances[i] += dist_min
+                    # dist_min = min(distances)
+                    # for i in range(len(distances)):
+                    #     distances[i] += dist_min
 
-                        dist_sum = sum(distances)
-                        new_loc = mu.Vector([0.0, 0.0, 0.0])
+                    dist_sum = sum(distances)
+                    new_loc = mu.Vector([0.0, 0.0, 0.0])
 
-                        if dist_sum/len(projected) > 0.02:
-                            for i, p in enumerate(projected):
-                                new_loc += p*distances[i]/dist_sum
-                        else:
-                            for i, p in enumerate(projected):
-                                new_loc += p
-                            new_loc /= len(projected)
+                    if dist_sum/len(projected) > 0.02:
+                        for i, p in enumerate(projected):
+                            new_loc += p*distances[i]/dist_sum
+                    else:
+                        for i, p in enumerate(projected):
+                            new_loc += p
+                        new_loc /= len(projected)
 
-                        v.co = new_loc
+                    v.co = new_loc
 
         self.payload = _pl
 
@@ -511,11 +514,8 @@ class CleanupThinFace_OP(Master_OP):
 
         self.prefix = "cleanup_thin_faces"
         self.name = "OBJECT_OT_CleanupThinFace"
-        self.start_mode = 'EDIT'
 
-        
-        def _pl(self, mesh, context):
-            bm = bmesh.from_edit_mesh(mesh)
+        def _pl(self, bm, context):
             thr = self.threshold
 
             for _ in range(self.repeat):
@@ -546,9 +546,6 @@ class CleanupThinFace_OP(Master_OP):
                 
                 bmesh.ops.collapse(bm, edges=cthese)
                 bmesh.ops.connect_verts_concave(bm, faces=bm.faces)
-            
-            bmesh.update_edit_mesh(mesh)
-            mesh.update(calc_edges=True)
 
         self.payload = _pl
 
@@ -558,161 +555,159 @@ class Cleanup_OP(Master_OP):
         self.props['fillface'] = bpy.props.BoolProperty(name="Fill faces", default=True)
         self.prefix = "cleanup_triface"
         self.name = "OBJECT_OT_CleanupTriface"
-        self.start_mode = 'EDIT'
         
-        def _pl(self, mesh, context):
-            with abm.Bmesh_from_edit(mesh) as bm:
-                # deselect all
-                for v in bm.verts:
-                    v.select = False
+        def _pl(self, bm, context):
+            # deselect all
+            for v in bm.verts:
+                v.select = False
 
-                # some preprocessing
-                #e_len = np.empty((len(bm.edges)), dtype=np.float32)
-                #for e in bm.edges:
-                #    e_len[e.index] = (e.verts[0].co - e.verts[1].co).length
-                #print(np.min(e_len), np.mean(e_len))
-                #bmesh.ops.dissolve_degenerate(bm) #, dist=np.min(e_len))
+            # some preprocessing
+            #e_len = np.empty((len(bm.edges)), dtype=np.float32)
+            #for e in bm.edges:
+            #    e_len[e.index] = (e.verts[0].co - e.verts[1].co).length
+            #print(np.min(e_len), np.mean(e_len))
+            #bmesh.ops.dissolve_degenerate(bm) #, dist=np.min(e_len))
 
-                # find nonmanifold edges
-                nm_edges = np.zeros((len(bm.edges)), dtype=np.bool)
-                c3_edges = np.zeros((len(bm.edges)), dtype=np.bool)
-                for e in bm.edges:
-                    facecount = len(e.link_faces)
-                    if facecount < 2:
-                        nm_edges[e.index] = True
-                    elif facecount > 2:
-                        c3_edges[e.index] = True
+            # find nonmanifold edges
+            nm_edges = np.zeros((len(bm.edges)), dtype=np.bool)
+            c3_edges = np.zeros((len(bm.edges)), dtype=np.bool)
+            for e in bm.edges:
+                facecount = len(e.link_faces)
+                if facecount < 2:
+                    nm_edges[e.index] = True
+                elif facecount > 2:
+                    c3_edges[e.index] = True
 
-                # A
+            # A
 
-                # remove all faces, connected to 3+ connection edge, that have nonmanifold edges
+            # remove all faces, connected to 3+ connection edge, that have nonmanifold edges
+            delete_this = []
+            for f in bm.faces:
+                nm = False
+                c3 = False
+                for e in f.edges:
+                    if nm_edges[e.index]:
+                        nm = True
+                    if c3_edges[e.index]:
+                        c3 = True
+                if nm and c3:
+                    delete_this.append(f)               
+
+            bmesh.ops.delete(bm, geom=delete_this, context='FACES')
+
+            #if self.trifaces == False:
+            bm.edges.ensure_lookup_table()
+            bm.verts.ensure_lookup_table()
+
+            c3_edges = np.zeros((len(bm.edges)), dtype=np.bool)
+            for e in bm.edges:
+                if len(e.link_faces) > 2:
+                    c3_edges[e.index] = True
+
+            # B
+
+            # mark non manifold verts (3-face-edge)
+            # delete verts, select edges around the deleted vertices
+            nonm_verts = set([])
+            nonm_edges_idx = np.nonzero(c3_edges)[0]
+            nonm_edges = [bm.edges[e] for e in nonm_edges_idx]
+
+            for e in nonm_edges:
+                e.select = True
+                nonm_verts.add(e.verts[0].index)
+                nonm_verts.add(e.verts[1].index)
+
+            for v in nonm_verts:
+                for v in abm.vert_vert(bm.verts[v]):
+                    v.select = True
+
+            # enum {
+            # DEL_VERTS = 1,
+            # DEL_EDGES,
+            # DEL_ONLYFACES,
+            # DEL_EDGESFACES,
+            # DEL_FACES,
+            # DEL_ALL,
+            # DEL_ONLYTAGGED
+            # };
+
+            delete_this = [bm.verts[v] for v in nonm_verts]
+            bmesh.ops.delete(bm, geom=delete_this, context='VERTS')
+
+            # delete loose edges
+            bm.edges.ensure_lookup_table()
+            loose_edges = []
+            for e in bm.edges:
+                if len(e.link_faces) == 0:
+                    loose_edges.append(e)
+            bmesh.ops.delete(bm, geom=loose_edges, context='EDGES')
+
+            bm.edges.ensure_lookup_table()
+            bm.verts.ensure_lookup_table()
+
+            for e in bm.edges:
+                if len(e.link_faces) > 1 or len(e.link_faces) == 0:
+                    e.select = False
+
+            # C
+
+            # fill faces for each loop
+            # triangulate
+            if self.fillface:
+                all_faces = []
+                for _ in range(2):
+                    bm.edges.ensure_lookup_table()
+                    loops = abm.bmesh_get_boundary_edgeloops_from_selected(bm)
+                    new_faces, leftover_loops = abm.bmesh_fill_from_loops(bm, loops)
+
+                    all_faces.extend(new_faces)
+                    abm.bmesh_deselect_all(bm)
+
+                    for l in leftover_loops:
+                        for e in l:
+                            e.select = True
+
+                    # TODO: loops with 4 edge connections (one vert) could be 
+                    #       split into 2 verts which makes the loops simple
+
+                    print(len(leftover_loops))
+                    if len(leftover_loops) == 0:
+                        break
+
+                for f in all_faces:
+                    f.select = True
+
+                bmesh.ops.recalc_face_normals(bm, faces=all_faces)
+                res = bmesh.ops.triangulate(bm, faces=all_faces)
+                smooth_verts = []
+                for f in res['faces']:
+                    for v in f.verts:
+                        smooth_verts.append(v)
+                smooth_verts = list(set(smooth_verts))
+                print(len(smooth_verts), "smoothed verts")
+                bmesh.ops.smooth_vert(bm, verts=smooth_verts, factor=1.0, use_axis_x=True, use_axis_y=True, use_axis_z=True)
+
+                # cleanup faces with no other face connections
+                bm.faces.ensure_lookup_table()
                 delete_this = []
                 for f in bm.faces:
-                    nm = False
-                    c3 = False
+                    no_conn = True
                     for e in f.edges:
-                        if nm_edges[e.index]:
-                            nm = True
-                        if c3_edges[e.index]:
-                            c3 = True
-                    if nm and c3:
-                        delete_this.append(f)               
+                        if e.is_manifold:
+                            no_conn = False
+                    if no_conn:
+                        delete_this.append(f)     
 
+                print(len(delete_this), "faces deleted after triface cleanup")
                 bmesh.ops.delete(bm, geom=delete_this, context='FACES')
-
-                #if self.trifaces == False:
-                bm.edges.ensure_lookup_table()
-                bm.verts.ensure_lookup_table()
-
-                c3_edges = np.zeros((len(bm.edges)), dtype=np.bool)
-                for e in bm.edges:
-                    if len(e.link_faces) > 2:
-                        c3_edges[e.index] = True
-
-                # B
-
-                # mark non manifold verts (3-face-edge)
-                # delete verts, select edges around the deleted vertices
-                nonm_verts = set([])
-                nonm_edges_idx = np.nonzero(c3_edges)[0]
-                nonm_edges = [bm.edges[e] for e in nonm_edges_idx]
-
-                for e in nonm_edges:
-                    e.select = True
-                    nonm_verts.add(e.verts[0].index)
-                    nonm_verts.add(e.verts[1].index)
-
-                for v in nonm_verts:
-                    for v in abm.vert_vert(bm.verts[v]):
-                        v.select = True
-
-                # enum {
-                # DEL_VERTS = 1,
-                # DEL_EDGES,
-                # DEL_ONLYFACES,
-                # DEL_EDGESFACES,
-                # DEL_FACES,
-                # DEL_ALL,
-                # DEL_ONLYTAGGED
-                # };
-
-                delete_this = [bm.verts[v] for v in nonm_verts]
-                bmesh.ops.delete(bm, geom=delete_this, context='VERTS')
-
-                # delete loose edges
-                bm.edges.ensure_lookup_table()
-                loose_edges = []
-                for e in bm.edges:
-                    if len(e.link_faces) == 0:
-                        loose_edges.append(e)
-                bmesh.ops.delete(bm, geom=loose_edges, context='EDGES')
-
-                bm.edges.ensure_lookup_table()
-                bm.verts.ensure_lookup_table()
-
-                for e in bm.edges:
-                    if len(e.link_faces) > 1 or len(e.link_faces) == 0:
-                        e.select = False
-
-                # C
-
-                # fill faces for each loop
-                # triangulate
-                if self.fillface:
-                    all_faces = []
-                    for _ in range(2):
-                        bm.edges.ensure_lookup_table()
-                        loops = abm.bmesh_get_boundary_edgeloops_from_selected(bm)
-                        new_faces, leftover_loops = abm.bmesh_fill_from_loops(bm, loops)
-
-                        all_faces.extend(new_faces)
-                        abm.bmesh_deselect_all(bm)
-
-                        for l in leftover_loops:
-                            for e in l:
-                                e.select = True
-
-                        # TODO: loops with 4 edge connections (one vert) could be 
-                        #       split into 2 verts which makes the loops simple
-
-                        print(len(leftover_loops))
-                        if len(leftover_loops) == 0:
-                            break
-
-                    for f in all_faces:
-                        f.select = True
-
-                    bmesh.ops.recalc_face_normals(bm, faces=all_faces)
-                    res = bmesh.ops.triangulate(bm, faces=all_faces)
-                    smooth_verts = []
-                    for f in res['faces']:
-                        for v in f.verts:
-                            smooth_verts.append(v)
-                    smooth_verts = list(set(smooth_verts))
-                    print(len(smooth_verts), "smoothed verts")
-                    bmesh.ops.smooth_vert(bm, verts=smooth_verts, factor=1.0, use_axis_x=True, use_axis_y=True, use_axis_z=True)
-
-                    # cleanup faces with no other face connections
-                    bm.faces.ensure_lookup_table()
-                    delete_this = []
-                    for f in bm.faces:
-                        no_conn = True
-                        for e in f.edges:
-                            if e.is_manifold:
-                                no_conn = False
-                        if no_conn:
-                            delete_this.append(f)     
-
-                    print(len(delete_this), "faces deleted after triface cleanup")
-                    bmesh.ops.delete(bm, geom=delete_this, context='FACES')
 
 
         self.payload = _pl
 
 class MeshNoise_OP(Master_OP):
     def generate(self):
-        self.props['amount'] = bpy.props.FloatProperty(name="Amount", default=1.0, min=-1000.0, max=1000.0)
-        self.props['scale'] = bpy.props.FloatProperty(name="Scale", default=1.0, min=0.0, max=1000.0)
+        self.props['amount'] = bpy.props.FloatProperty(name="Amount", default=1.0)
+        self.props['scale'] = bpy.props.FloatProperty(name="Scale", default=1.0, min=0.0)
         self.props['noisetype']= bpy.props.EnumProperty(
             items = [('DISTANCE','Distance','','',0), 
                     ('CHEBYCHEV','Chebychev','','',1),
@@ -728,18 +723,18 @@ class MeshNoise_OP(Master_OP):
 
         self.prefix = "mesh_noise"
         self.name = "OBJECT_OT_MeshNoise"
-        self.start_mode = 'EDIT'
 
-        def _pl(self, mesh, context):
-            with abm.Bmesh_from_edit(mesh) as bm:
-                df = None
-                if self.noisef == '21': df = lambda x: x[1]-x[0] 
-                if self.noisef == '1': df = lambda x: x[0] 
-                if self.noisef == '2': df = lambda x: x[1] 
+        def _pl(self, bm, context):
+            df = None
+            if self.noisef == '21': df = lambda x: x[1]-x[0] 
+            if self.noisef == '1': df = lambda x: x[0] 
+            if self.noisef == '2': df = lambda x: x[1] 
+            if df == None:
+                df = lambda x: x[0]
 
-                for v in bm.verts:
-                    d, _ = mu.noise.voronoi(v.co * self.scale, distance_metric=self.noisetype, exponent=2.5) 
-                    v.co += v.normal * df(d) * self.amount
+            for v in bm.verts:
+                d, _ = mu.noise.voronoi(v.co * self.scale, distance_metric=self.noisetype, exponent=2.5) 
+                v.co += v.normal * df(d) * self.amount
 
         self.payload = _pl
 
@@ -749,73 +744,71 @@ class EdgesToCurve_OP(Master_OP):
 
         self.prefix = "optimal_edge_flip"
         self.name = "OBJECT_OT_EdgesToCurve"
-        self.start_mode = 'EDIT'
 
-        def _pl(self, mesh, context):
-            with abm.Bmesh_from_edit(mesh) as bm:
-                traversed = np.zeros((len(bm.edges)), dtype=np.bool)
-                for e in bm.edges:
-                    if traversed[e.index]:
+        def _pl(self, bm, context):
+            traversed = np.zeros((len(bm.edges)), dtype=np.bool)
+            for e in bm.edges:
+                if traversed[e.index]:
+                    continue 
+
+                f = e.link_faces
+                # only if edge has two faces connected
+                if len(f) == 2:
+                    # mark all both faces edges as traversed
+                    for n in range(2):
+                        for i in f[n].edges:
+                            traversed[i.index] = True
+
+                    e_len = e.calc_length()
+
+                    # whats the max number edge can be rotated on the 2-face plane
+                    max_rots = min(len(f[0].edges)-2, len(f[1].edges)-2)
+
+                    # initial fit (find lowest angle between edge vert normals)
+                    # vs. edge length
+                    v0 = e.verts[0]
+                    v1 = e.verts[1]
+                    diff_01 = v0.co-v1.co
+                    if diff_01.length == 0:
                         continue 
+                    best = e_len*((v0.normal.dot(v1.normal)+1)/2)*self.balance + \
+                        (e_len/(diff_01).length)*(1.0-self.balance)
+                    rotations = 0
 
-                    f = e.link_faces
-                    # only if edge has two faces connected
-                    if len(f) == 2:
-                        # mark all both faces edges as traversed
-                        for n in range(2):
-                            for i in f[n].edges:
-                                traversed[i.index] = True
+                    # select vert that from which you take the next step doesn't end
+                    # on a vert on the edge <e> (for each face loop)
+                    # so that we have the first rotated edge position
 
-                        e_len = e.calc_length()
+                    fvi = [0, 0] 
+                    for n in range(2):
+                        fvi[n] = [i for i, fv in enumerate(f[n].verts) if e.verts[0] == fv][0]
+                        n_step = (fvi[n]+1) % len(f[n].verts)
+                        if f[n].verts[n_step] == e.verts[1]:
+                            fvi[n] = n_step
 
-                        # whats the max number edge can be rotated on the 2-face plane
-                        max_rots = min(len(f[0].edges)-2, len(f[1].edges)-2)
+                    for r in range(max_rots):
+                        fvi[0] = (fvi[0]+1) % len(f[0].verts)
+                        fvi[1] = (fvi[1]+1) % len(f[1].verts)
 
-                        # initial fit (find lowest angle between edge vert normals)
-                        # vs. edge length
-                        v0 = e.verts[0]
-                        v1 = e.verts[1]
-                        best = e_len*((v0.normal.dot(v1.normal)+1)/2)*self.balance + \
+                        v0 = f[0].verts[fvi[0]]
+                        v1 = f[1].verts[fvi[1]]
+
+                        if v0 == v1:
+                            continue
+
+                        new_calc = e_len*((v0.normal.dot(v1.normal)+1)/2)*self.balance + \
                             (e_len/(v0.co-v1.co).length)*(1.0-self.balance)
-                        rotations = 0
 
-                        # select vert that from which you take the next step doesn't end
-                        # on a vert on the edge <e> (for each face loop)
-                        # so that we have the first rotated edge position
+                        if new_calc > best:
+                            best = new_calc
+                            rotations = r+1
 
-                        fvi = [0, 0] 
-                        for n in range(2):
-                            fvi[n] = [i for i, fv in enumerate(f[n].verts) if e.verts[0] == fv][0]
-                            n_step = (fvi[n]+1) % len(f[n].verts)
-                            if f[n].verts[n_step] == e.verts[1]:
-                                fvi[n] = n_step
-
-                        for r in range(max_rots):
-                            fvi[0] = (fvi[0]+1) % len(f[0].verts)
-                            fvi[1] = (fvi[1]+1) % len(f[1].verts)
-
-                            v0 = f[0].verts[fvi[0]]
-                            v1 = f[1].verts[fvi[1]]
-
-                            if v0 == v1:
-                                continue
-
-                            new_calc = e_len*((v0.normal.dot(v1.normal)+1)/2)*self.balance + \
-                                (e_len/(v0.co-v1.co).length)*(1.0-self.balance)
-
-                            if new_calc > best:
-                                best = new_calc
-                                rotations = r+1
-
-                        # flip edge to optimal location
-                        te = e
-                        for _ in range(rotations):
-                            te = bmesh.utils.edge_rotate(te, True)
-                            if te == None:
-                                break
-
-
-
+                    # flip edge to optimal location
+                    te = e
+                    for _ in range(rotations):
+                        te = bmesh.utils.edge_rotate(te, True)
+                        if te == None:
+                            break
 
         self.payload = _pl
 
@@ -826,55 +819,53 @@ class SplitQuads_OP(Master_OP):
 
         self.prefix = "split_quads"
         self.name = "OBJECT_OT_SplitQuads"
-        self.start_mode = 'EDIT'
 
-        def _pl(self, mesh, context):
-            with abm.Bmesh_from_edit(mesh) as bm:
-                for f in bm.faces:
-                    # for all quads
-                    if len(f.edges) == 4:
-                        # quad:
-                        #  0
-                        # 3 1
-                        #  2
+        def _pl(self, bm, context):
+            for f in bm.faces:
+                # for all quads
+                if len(f.edges) == 4:
+                    # quad:
+                    #  0
+                    # 3 1
+                    #  2
 
-                        v = [i for i in f.verts]
+                    v = [i for i in f.verts]
 
-                        # get two possible cut configurations
-                        # either cut v[0],v[2] or v[1],v[3]
+                    # get two possible cut configurations
+                    # either cut v[0],v[2] or v[1],v[3]
 
-                        if not self.normals:
-                            # case: v[0],v[2]
-                            vec10 = v[0].co - v[1].co
-                            vec12 = v[2].co - v[1].co
-                            # note: ccw cross product
-                            crp102 = vec10.normalized().cross(vec12.normalized())
+                    if not self.normals:
+                        # case: v[0],v[2]
+                        vec10 = v[0].co - v[1].co
+                        vec12 = v[2].co - v[1].co
+                        # note: ccw cross product
+                        crp102 = vec10.normalized().cross(vec12.normalized())
 
-                            vec30 = v[0].co - v[3].co
-                            vec32 = v[2].co - v[3].co
-                            crp302 = vec32.normalized().cross(vec30.normalized())
+                        vec30 = v[0].co - v[3].co
+                        vec32 = v[2].co - v[3].co
+                        crp302 = vec32.normalized().cross(vec30.normalized())
 
-                            case02 = crp102.dot(crp302)
+                        case02 = crp102.dot(crp302)
 
-                            # case: v[1],v[3]
-                            vec01 = v[1].co - v[0].co
-                            vec03 = v[3].co - v[0].co
-                            crp013 = vec01.normalized().cross(vec03.normalized())
+                        # case: v[1],v[3]
+                        vec01 = v[1].co - v[0].co
+                        vec03 = v[3].co - v[0].co
+                        crp013 = vec01.normalized().cross(vec03.normalized())
 
-                            vec21 = v[1].co - v[2].co
-                            vec23 = v[3].co - v[2].co
-                            crp213 = vec21.normalized().cross(vec23.normalized())
+                        vec21 = v[1].co - v[2].co
+                        vec23 = v[3].co - v[2].co
+                        crp213 = vec21.normalized().cross(vec23.normalized())
 
-                            case13 = crp013.dot(crp213)
+                        case13 = crp013.dot(crp213)
+                    else:
+                        case02 = v[0].normal.dot(v[2].normal)
+                        case13 = v[1].normal.dot(v[3].normal)
+
+                    if abs(case02) < self.thres or abs(case13) < self.thres:
+                        if abs(case02) > abs(case13):
+                            bmesh.utils.face_split(f, v[0], v[2])
                         else:
-                            case02 = v[0].normal.dot(v[2].normal)
-                            case13 = v[1].normal.dot(v[3].normal)
-
-                        if abs(case02) < self.thres or abs(case13) < self.thres:
-                            if abs(case02) > abs(case13):
-                                bmesh.utils.face_split(f, v[0], v[2])
-                            else:
-                                bmesh.utils.face_split(f, v[1], v[3])
+                            bmesh.utils.face_split(f, v[1], v[3])
 
 
         self.payload = _pl
@@ -882,14 +873,15 @@ class SplitQuads_OP(Master_OP):
 class RebuildQuads_OP(Master_OP):
     def generate(self):
         self.props['decimate'] = bpy.props.FloatProperty(name="Decimate", default=0.1, min=0.0, max=1.0)
-        self.props['quadstep'] = bpy.props.FloatProperty(name="Quad Angle", default=4.0, min=0.0, max=4.0)
-        self.props['smooth'] = bpy.props.BoolProperty(name="Smooth", default=True)
+        #self.props['subdivide'] = bpy.props.IntProperty(name="Subdivide", default=1, min=1, max=10)
+        #self.props['quadstep'] = bpy.props.FloatProperty(name="Quad Angle", default=4.0, min=0.0, max=4.0)
+        #self.props['smooth'] = bpy.props.BoolProperty(name="Smooth", default=True)
 
         self.prefix = "rebuild_quads"
         self.name = "OBJECT_OT_RebuildQuads"
-        self.start_mode = 'OBJECT'
 
-        def _pl(self, mesh, context):
+        def _pl(self, bm, context):
+            bpy.ops.object.mode_set(mode='OBJECT')
             ob = context.object
 
             temp_object = ob.copy()
@@ -901,12 +893,14 @@ class RebuildQuads_OP(Master_OP):
 
             bpy.ops.object.modifier_apply(modifier=m_decimate.name)
 
-            if self.smooth:
-                bpy.ops.object.mesh_refine_toolbox_surface_smooth(border=True, iter=2)
+            # if self.smooth:
+            #     bpy.ops.object.mesh_refine_toolbox_surface_smooth(border=True, iter=2)
 
             bpy.ops.object.mode_set(mode='EDIT')
             bpy.ops.mesh.select_all(action='SELECT')
-            bpy.ops.mesh.tris_convert_to_quads(face_threshold=self.quadstep, shape_threshold=self.quadstep)
+            #bpy.ops.mesh.tris_convert_to_quads(face_threshold=self.quadstep, shape_threshold=self.quadstep)
+            bpy.ops.mesh.tris_convert_to_quads(face_threshold=4.0, shape_threshold=4.0)
+            #bpy.ops.object.mesh_refine_toolbox_split_quads(thres=1.0, normals=True)
             bpy.ops.object.mode_set(mode='OBJECT')
 
             m_subd = ob.modifiers.new(name="Subd", type='SUBSURF')
@@ -923,6 +917,33 @@ class RebuildQuads_OP(Master_OP):
             objs.remove(objs[temp_object.name], do_unlink=True)
             meshes = bpy.data.meshes
             meshes.remove(meshes[meshname], do_unlink=True)
+            bpy.ops.object.mode_set(mode='EDIT')
+
+        self.payload = _pl
+
+class RemoveTwoBorder_OP(Master_OP):
+    def generate(self):
+        self.prefix = "remove_two_border"
+        self.name = "OBJECT_OT_RemoveTwoBorder"
+
+        def _pl(self, bm, context):
+            selected_faces = []
+            for f in bm.faces:
+                previous = None
+                count = 0
+                for e in f.edges:
+                    if previous == None:
+                        previous = e.is_manifold
+                    if e.is_manifold != previous:
+                        count += 1
+                        previous = e.is_manifold
+
+                # more than one shared non-manifold border
+                if count > 2:
+                    selected_faces.append(f)
+            
+            if len(selected_faces) > 0:
+                bmesh.ops.delete(bm, geom=selected_faces, context='FACES')
 
         self.payload = _pl
 
@@ -938,9 +959,9 @@ bl_info = {
 
 
 pbuild = PanelBuilder("mesh_refine_toolbox", "mesh_refine_toolbox_panel", \
-    [Mechanize_OP(), SurfaceSmooth_OP(), Masked_Smooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), 
+    [Mechanize_OP(), SurfaceSmooth_OP(), MergeTiny_OP(), CleanupThinFace_OP(), 
      Cleanup_OP(), CropToLarge_OP(), EvenEdges_OP(), MeshNoise_OP(), EdgesToCurve_OP(),
-     SplitQuads_OP(), RebuildQuads_OP()])
+     SplitQuads_OP(), RebuildQuads_OP(), RemoveTwoBorder_OP()])
 OBJECT_PT_ToolsAMB = pbuild.create_panel()
 
 def register():
