@@ -125,8 +125,9 @@ def op_smooth_mask(verts, edges, mask, n):
     for _ in range(n):
         # <new vert location> = sum(<connected locations>) / <number of connected locations>
         locs = np.zeros((len(verts), 3), dtype=np.float64)
-        np.add.at(locs, edges[:,0], verts[edges[:,1]])
-        np.add.at(locs, edges[:,1], verts[edges[:,0]])
+        nvt = new_verts.T
+        np.add.at(locs, edges[:,0], nvt[edges[:,1]])
+        np.add.at(locs, edges[:,1], nvt[edges[:,0]])
 
         locs = locs.T
         locs /= edge_c
