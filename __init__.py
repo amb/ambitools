@@ -14,25 +14,24 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
+
+import bpy
+import numpy as np
+import bmesh
+from collections import OrderedDict
+import mathutils as mu
+
 # import/reload all source files
-if not "bpy" in locals():
-    from . import amb_utils as au
-    from . import amb_fastmesh as afm
-    from . import amb_bmesh as abm
+if "afm" not in locals():
+    from .amb import utils as au
+    from .amb import fastmesh as afm
+    from .amb import bbmesh as abm
 else:
     import importlib
 
     importlib.reload(au)
     importlib.reload(afm)
     importlib.reload(abm)
-
-
-import bpy  # pylint: disable=import-error
-import numpy as np
-import bmesh  # pylint: disable=import-error
-import random
-from collections import defaultdict, OrderedDict
-import mathutils as mu  # pylint: disable=import-error
 
 
 class Mesh_Operator(bpy.types.Operator):
@@ -88,26 +87,25 @@ class Mesh_Operator(bpy.types.Operator):
 
 
 def mesh_operator_factory(props, prefix, payload, name, parent_name, info):
-    return type(
+    temp = type(
         name,
         (Mesh_Operator,),
         {
-            **{
-                "bl_idname": "object." + parent_name + "_" + prefix,
-                "bl_label": " ".join(prefix.split("_")).capitalize(),
-                "bl_description": info,
-                "my_props": props.keys(),
-                "prefix": prefix,
-                "parent_name": parent_name,
-                "payload": payload,
-            },
-            **props,
+            "bl_idname": "object." + parent_name + "_" + prefix,
+            "bl_label": " ".join(prefix.split("_")).capitalize(),
+            "bl_description": info,
+            "my_props": props.keys(),
+            "prefix": prefix,
+            "parent_name": parent_name,
+            "payload": payload,
         },
     )
+    setattr(temp, "__annotations__", props)
+    return temp
 
 
 class PanelBuilder:
-    def __init__(self, master_name, master_panel, mesh_ops):
+    def __init__(self, master_name, mesh_ops):
         self.panel = {
             i.prefix: bpy.props.BoolProperty(
                 name=i.prefix.capitalize() + " settings", description="Display settings of the tool", default=False
@@ -116,13 +114,12 @@ class PanelBuilder:
         }
 
         self.master_name = master_name
-        self.master_panel = master_panel
         self.mesh_ops = mesh_ops
 
     def create_panel(this):  # pylint: disable=E0213
         class _pt(bpy.types.Panel):
             bl_label = " ".join([i.capitalize() for i in this.master_name.split("_")])
-            bl_idname = this.master_panel
+            bl_idname = "OBUILD_PT_" + "".join([i.capitalize() for i in this.master_name.split("_")]) + "_panel"
 
             bl_space_type = "VIEW_3D"
             bl_region_type = "UI"
@@ -134,7 +131,7 @@ class PanelBuilder:
 
                 for mop in this.mesh_ops:
                     split = col.split(factor=0.15, align=True)
-                    opname = this.master_panel + "_" + mop.prefix
+                    opname = this.master_name + "_panel_" + mop.prefix
 
                     if len(mop.props) == 0:
                         split.prop(context.scene, opname, text="", icon="DOT")
@@ -162,7 +159,7 @@ class PanelBuilder:
                 setattr(bpy.types.Scene, mesh_op.parent_name + "_" + mesh_op.prefix + "_" + k, v)
 
         for k, v in self.panel.items():
-            setattr(bpy.types.Scene, self.master_panel + "_" + k, v)
+            setattr(bpy.types.Scene, self.master_name + "_panel_" + k, v)
 
     def unregister_params(self):
         for mesh_op in self.mesh_ops:
@@ -171,7 +168,7 @@ class PanelBuilder:
                 delattr(bpy.types.Scene, mesh_op.parent_name + "_" + mesh_op.prefix + "_" + k)
 
         for k, _ in self.panel.items():
-            delattr(bpy.types.Scene, self.master_panel + "_" + k)
+            delattr(bpy.types.Scene, self.master_name + "_panel_" + k)
 
 
 class Master_OP:
@@ -785,7 +782,7 @@ class MeshNoise_OP(Master_OP):
                 df = lambda x: x[0]
             if self.noisef == "2":
                 df = lambda x: x[1]
-            if df == None:
+            if df is None:
                 df = lambda x: x[0]
 
             for v in bm.verts:
@@ -867,7 +864,7 @@ class EdgesToCurve_OP(Master_OP):
                     te = e
                     for _ in range(rotations):
                         te = bmesh.utils.edge_rotate(te, True)
-                        if te == None:
+                        if te is None:
                             break
 
         self.payload = _pl
@@ -969,7 +966,7 @@ class RebuildQuads_OP(Master_OP):
             # bpy.ops.object.mesh_refine_toolbox_split_quads(thres=1.0, normals=True)
             bpy.ops.object.mode_set(mode="OBJECT")
 
-            m_subd = ob.modifiers.new(name="Subd", type="SUBSURF")
+            _ = ob.modifiers.new(name="Subd", type="SUBSURF")
             m_swrp = ob.modifiers.new(name="Shrinkwrap", type="SHRINKWRAP")
             # m_swrp.wrap_method = 'PROJECT'
             # m_swrp.cull_face = 'FRONT'
@@ -1000,7 +997,7 @@ class RemoveTwoBorder_OP(Master_OP):
                 previous = None
                 count = 0
                 for e in f.edges:
-                    if previous == None:
+                    if previous is None:
                         previous = e.is_manifold
                     if e.is_manifold != previous:
                         count += 1
@@ -1029,7 +1026,6 @@ bl_info = {
 
 pbuild = PanelBuilder(
     "mesh_refine_toolbox",
-    "mesh_refine_toolbox_panel",
     [
         Mechanize_OP(),
         SurfaceSmooth_OP(),
@@ -1046,15 +1042,14 @@ pbuild = PanelBuilder(
         RemoveTwoBorder_OP(),
     ],
 )
-OBJECT_PT_ToolsAMB = pbuild.create_panel()
+OBUILD_PT_MeshRefineToolbox = pbuild.create_panel()
 
 
 def register():
     pbuild.register_params()
-    bpy.utils.register_class(OBJECT_PT_ToolsAMB)
+    bpy.utils.register_class(OBUILD_PT_MeshRefineToolbox)
 
 
 def unregister():
     pbuild.unregister_params()
-    bpy.utils.unregister_class(OBJECT_PT_ToolsAMB)
-
+    bpy.utils.unregister_class(OBUILD_PT_MeshRefineToolbox)

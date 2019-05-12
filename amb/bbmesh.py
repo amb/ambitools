@@ -1,8 +1,7 @@
 import numpy as np
-import bpy # pylint: disable=import-error
-import bmesh # pylint: disable=import-error
-import random
-from . import amb_fastmesh as afm
+import bmesh  # pylint: disable=import-error
+from . import fastmesh as afm
+
 
 def read_bmesh(bmesh):
     bmesh.verts.ensure_lookup_table()
@@ -11,11 +10,11 @@ def read_bmesh(bmesh):
     verts = [(i.co[0], i.co[1], i.co[2]) for i in bmesh.verts]
     qu, tr = [], []
     for f in bmesh.faces:
-        if len(f.verts) == 4:        
+        if len(f.verts) == 4:
             qu.append([])
             for v in f.verts:
                 qu[-1].append(v.index)
-        if len(f.verts) == 3:        
+        if len(f.verts) == 3:
             tr.append([])
             for v in f.verts:
                 tr[-1].append(v.index)
@@ -23,21 +22,19 @@ def read_bmesh(bmesh):
     return (np.array(verts), np.array(tr), np.array(qu))
 
 
-def read_formatted_mesh(me):     
+def read_formatted_mesh(me):
     bm = bmesh.new()
     bm.from_mesh(me)
 
     loops = afm.read_loops(me)
     if np.max(loops) >= 4:
         # Mesh has ngons/quads! Triangulate ...
-        bmesh.ops.triangulate(bm, faces=bm.faces[:], quad_method='BEAUTY', ngon_method='BEAUTY')
+        bmesh.ops.triangulate(bm, faces=bm.faces[:], quad_method="BEAUTY", ngon_method="BEAUTY")
 
     nverts, ntris, nquads = read_bmesh(bm)
     bm.free()
 
     return nverts, ntris, nquads
-
-
 
 
 def get_nonmanifold_verts(mesh):
@@ -58,23 +55,29 @@ def get_nonmanifold_verts(mesh):
 
 # Mesh connection ops
 
+
 def faces_verts(faces):
     return {v for f in faces for v in f.verts}
+
 
 def verts_faces(verts):
     return {f for v in verts for f in v.link_faces}
 
+
 def vert_vert(v):
     return [e.other_vert(v) for e in v.link_edges]
 
+
 def con_verts(v, tfun):
     return {x for x in vert_vert(v) if tfun(x)}
+
 
 def con_area(verts, tfun):
     connected = set()
     for v in verts:
         connected |= con_verts(v, tfun)
     return connected
+
 
 def get_shell(clean_vert, tfun):
     previous = set([clean_vert])
@@ -89,8 +92,9 @@ def get_shell(clean_vert, tfun):
         connected = con_area(connected, tfun)
         if len(connected - previous) == 0:
             break
-    
+
     return res
+
 
 def mesh_get_shells(bm):
     traversed = np.zeros((len(bm.verts)), dtype=np.bool)
@@ -99,7 +103,7 @@ def mesh_get_shells(bm):
     while np.any(traversed == False):
         location = np.nonzero(traversed == False)[0][0]
         others = [bm.verts[location]]
-        
+
         shells.append([])
         while others != []:
             shells[-1].extend(others)
@@ -120,7 +124,7 @@ def mesh_get_edge_connection_shells(bm):
     while np.any(traversed == False):
         location = np.nonzero(traversed == False)[0][0]
         others = [bm.faces[location]]
-        
+
         shells.append([])
         while others != []:
             shells[-1].extend(others)
@@ -131,7 +135,7 @@ def mesh_get_edge_connection_shells(bm):
                     linked_faces = []
                     for e in f.edges:
                         if len(e.link_faces) > 1:
-                            linked_faces.append([i for i in e.link_faces if i!=f][0])
+                            linked_faces.append([i for i in e.link_faces if i != f][0])
                     step.extend(linked_faces)
             others = step
     return shells
@@ -147,7 +151,7 @@ def bmesh_get_boundary_edgeloops_from_selected(bm):
     while np.any(t_edges == False):
         location = np.nonzero(t_edges == False)[0][0]
         others = [bm.edges[location]]
-        
+
         loops.append([])
         while others != []:
             loops[-1].extend(others)
@@ -161,21 +165,22 @@ def bmesh_get_boundary_edgeloops_from_selected(bm):
 
     return [list(set(l)) for l in loops]
 
+
 def bmesh_vertloop_from_edges(edges):
     res = [edges[0]]
     verts = []
     while len(res) < len(edges) and (len(verts) < 3 or verts[-1] != verts[0] and verts[-1] != verts[-2]):
         r = res[-1]
 
-        e0 = [e for e in r.verts[0].link_edges if e!= r and e in edges]           
-        e1 = [e for e in r.verts[1].link_edges if e!= r and e in edges]
+        e0 = [e for e in r.verts[0].link_edges if e != r and e in edges]
+        e1 = [e for e in r.verts[1].link_edges if e != r and e in edges]
 
         if len(e0) > 1 or len(e1) > 1:
             pass
-            #print("invalid edge in bmesh_order_edgeloop()")
+            # print("invalid edge in bmesh_order_edgeloop()")
 
         if len(e0) == 0:
-            #print("not a loop")
+            # print("not a loop")
             return None
 
         test = e0[0] not in res
@@ -190,7 +195,7 @@ def bmesh_vertloop_from_edges(edges):
             verts.append(v)
 
     verts.append(res[-1].other_vert(verts[-1]))
-    #print([i.index for i in verts])
+    # print([i.index for i in verts])
 
     # final sanity check
     if len(verts) != len(list(set(verts))):
@@ -223,16 +228,16 @@ def bmesh_deselect_all(bm):
         e.select = False
 
 
-
-class Bmesh_from_edit():
+class Bmesh_from_edit:
     def __init__(self, mesh):
         self.mesh = mesh
+
     def __enter__(self):
         self.bm = bmesh.from_edit_mesh(self.mesh)
         self.bm.verts.ensure_lookup_table()
         self.bm.edges.ensure_lookup_table()
         self.bm.faces.ensure_lookup_table()
         return self.bm
+
     def __exit__(self, type, value, traceback):
         bmesh.update_edit_mesh(self.mesh)
-

@@ -1,9 +1,6 @@
-import numpy as np
-import bpy  # pylint: disable=import-error
-import bmesh  # pylint: disable=import-error
-import random
-
-import cProfile, pstats, io
+import cProfile
+import pstats
+import io
 
 
 # TODO: with aut.set_mode("OBJECT")  # OBJECT, EDIT ...
@@ -24,4 +21,3 @@ def profiling_end(pr):
     ps = pstats.Stats(pr, stream=s)
     ps.strip_dirs().sort_stats(sortby).print_stats(20)
     print(s.getvalue())
-
