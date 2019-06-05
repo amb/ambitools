@@ -60,11 +60,11 @@ class Mesh_Operator(bpy.types.Operator):
                 opname = pp_opname(self.parent_name, self.prefix, p)
                 panel_value = getattr(context.scene, opname)
                 # setattr(self, p, panel_value)
-                print(self.__annotations__[p])
-                self.__annotations__[p] = panel_value
-                print(opname, panel_value)
+                # print(self.__annotations__[p])
+                # self.__annotations__[p] = panel_value
+                # print(opname, panel_value)
+                setattr(self, p, panel_value)
             print(self.bl_idname)
-            print(self.__dict__)
 
         return self.execute(context)
 
@@ -1002,6 +1002,8 @@ class RebuildQuads_OP(Mesh_Master_OP):
         )
 
         def _pl(self, bm, context):
+            indices = [v.index for v in bm.verts]
+
             bpy.ops.object.mode_set(mode="OBJECT")
             ob = context.object
 
@@ -1009,13 +1011,55 @@ class RebuildQuads_OP(Mesh_Master_OP):
             temp_object.data = ob.data.copy()
             temp_object.animation_data_clear()
 
+            print("Curvature.")
+
+            # decimate A
+            # m_decimate = ob.modifiers.new(name="Decimate", type="DECIMATE")
+            # m_decimate.ratio = self.decimate
+
+            # bpy.ops.object.modifier_apply(modifier=m_decimate.name)
+
+            # decimate B
+            mesh = ob.data
+
+            vg = None
+            if "curve" not in ob.vertex_groups:
+                vg = ob.vertex_groups.new(name="curve")
+            else:
+                vg = ob.vertex_groups["curve"]
+
+            verts = afm.read_verts(mesh)
+            edges = afm.read_edges(mesh)
+            norms = afm.read_norms(mesh)
+
+            curve = afm.calc_curvature(verts, edges, norms) - 0.5
+            curve = afm.mesh_smooth_filter_variable(curve, verts, edges, 10)
+            curve = np.abs(curve)
+
+            # curve -= np.min(curve)
+            curve /= np.max(curve)
+            curve **= 2.0
+            # curve *= 8.0 * self.power
+
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+            for v in indices:
+                vg.add([v], curve[v], "REPLACE")
+
+            print("Decimate.")
+
             m_decimate = ob.modifiers.new(name="Decimate", type="DECIMATE")
             m_decimate.ratio = self.decimate
+            m_decimate.vertex_group = vg.name
+            m_decimate.vertex_group_factor = 10.0
+            m_decimate.invert_vertex_group = True
 
             bpy.ops.object.modifier_apply(modifier=m_decimate.name)
 
             # if self.smooth:
             #     bpy.ops.object.mesh_refine_toolbox_surface_smooth(border=True, iter=2)
+
+            print("Quads.")
 
             bpy.ops.object.mode_set(mode="EDIT")
             bpy.ops.mesh.select_all(action="SELECT")
@@ -1024,7 +1068,7 @@ class RebuildQuads_OP(Mesh_Master_OP):
             # bpy.ops.object.mesh_refine_toolbox_split_quads(thres=1.0, normals=True)
             bpy.ops.object.mode_set(mode="OBJECT")
 
-            _ = ob.modifiers.new(name="Subd", type="SUBSURF")
+            # _ = ob.modifiers.new(name="Subd", type="SUBSURF")
             m_swrp = ob.modifiers.new(name="Shrinkwrap", type="SHRINKWRAP")
             # m_swrp.wrap_method = 'PROJECT'
             # m_swrp.cull_face = 'FRONT'
@@ -1137,6 +1181,144 @@ class CurveSubd_OP(Mesh_Master_OP):
         self.payload = _pl
 
 
+class CurveDecimate_OP(Mesh_Master_OP):
+    def generate(self):
+        self.props["thres"] = bpy.props.FloatProperty(name="Threshold", default=0.1, min=0.0, max=1.0)
+
+        self.prefix = "curve_decimate"
+        self.name = "OBJECT_OT_CurveDecimate"
+        self.info = "Decimate according to curvature"
+
+        def _pl(self, bm, context):
+            # for i in range(5):
+            #     bmesh.ops.dissolve_limit(bm, angle_limit=i / 10, edges=bm.edges)
+
+            # 1
+            # for i in range(1):
+            #     dis = []
+            #     verts = set()
+            #     faces = set()
+            #     for e in bm.edges:
+            #         lf = e.link_faces
+            #         fa0 = lf[0].calc_area()
+            #         fa1 = lf[1].calc_area()
+            #         if e.calc_face_angle() * (fa0 + fa1) < 0.1:
+            #             # (2 ** i) * 0.1:
+            #             if (
+            #                 len(lf[0].verts) < 4
+            #                 and len(lf[1].verts) < 4
+            #                 and e.verts[0].index not in verts
+            #                 and e.verts[1].index not in verts
+            #                 and lf[0].index not in faces
+            #                 and lf[1].index not in faces
+            #             ):
+            #                 dis.append(e)
+            #                 verts.add(e.verts[0].index)
+            #                 verts.add(e.verts[1].index)
+            #                 faces.add(lf[0].index)
+            #                 faces.add(lf[1].index)
+
+            #     bmesh.ops.dissolve_edges(bm, edges=dis, use_verts=True)
+
+            # 2
+            # for i in range(1):
+            #     # dis = []
+            #     verts = set()
+            #     # faces = set()
+            #     edges = []
+            #     for e in bm.edges:
+            #         lf = e.link_faces
+            #         if len(lf) != 2:
+            #             continue
+
+            #         fa0 = lf[0].calc_area()
+            #         fa1 = lf[1].calc_area()
+            #         if fa0 == 0 or fa1 == 0:
+            #             continue
+
+            #         ratio = fa0 / fa1
+            #         if ratio > 1.0:
+            #             ratio = 1.0 / ratio
+            #         if (
+            #             e.calc_face_angle() * (fa0 + fa1) * ratio < self.thres
+            #             and e.verts[0].index not in verts
+            #             and e.verts[1].index not in verts
+            #             # and lf[0].index not in faces
+            #             # and lf[1].index not in faces
+            #         ):
+            #             # verts.add(e.verts[0].index)
+            #             # verts.add(e.verts[1].index)
+            #             # connected = set()
+            #             neighbourhood = set(abm.vert_vert(e.verts[0])) | set(abm.vert_vert(e.verts[1]))
+
+            #             for v in list(neighbourhood):
+            #                 verts.add(v.index)
+
+            #             # for v in lf[0].verts:
+            #             #     verts.add(v.index)
+
+            #             # for v in lf[1].verts:
+            #             #     verts.add(v.index)
+            #             # faces.add(lf[0].index)
+            #             # faces.add(lf[1].index)
+            #             edges.append(e)
+
+            #     # bmesh.ops.pointmerge(bm, verts=p, merge_co=(p[0].co + p[1].co) / 2)
+            #     bmesh.ops.collapse(bm, edges=edges)
+
+            #     dis = []
+            #     for f in bm.faces:
+            #         total = 0
+            #         for e in f.edges:
+            #             if e.is_manifold:
+            #                 total += 1
+            #         if total < 2:
+            #             dis.append(f)
+
+            #     bmesh.ops.delete(bm, geom=dis, context="FACES")
+            # bpy.ops.object.mode_set(mode="OBJECT")
+            ob = context.object
+            vg = None
+            if "curve" not in ob.vertex_groups:
+                vg = ob.vertex_groups.new(name="curve")
+            else:
+                vg = ob.vertex_groups["curve"]
+
+            mesh = ob.data
+
+            verts = afm.read_verts(mesh)
+            edges = afm.read_edges(mesh)
+            norms = afm.read_norms(mesh)
+
+            curve = afm.calc_curvature(verts, edges, norms) - 0.5
+            curve = afm.mesh_smooth_filter_variable(curve, verts, edges, 20)
+            curve = np.abs(curve)
+
+            # curve -= np.min(curve)
+            curve /= np.max(curve)
+            curve **= 2.0
+            # curve *= 8.0 * self.power
+
+            indices = [v.index for v in bm.verts]
+
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+            for v in indices:
+                vg.add([v], curve[v], "REPLACE")
+
+            m_decimate = ob.modifiers.new(name="Decimate", type="DECIMATE")
+            m_decimate.ratio = self.thres
+            m_decimate.vertex_group = vg.name
+            m_decimate.vertex_group_factor = 10.0
+            m_decimate.invert_vertex_group = True
+
+            # bpy.ops.object.modifier_apply(modifier=m_decimate.name)
+
+            bpy.ops.object.mode_set(mode="EDIT")
+
+        self.payload = _pl
+
+
 bl_info = {
     "name": "Mesh Refine Toolbox",
     "category": "Mesh",
@@ -1165,6 +1347,7 @@ pbuild = PanelBuilder(
         RebuildQuads_OP(),
         FacePush_OP(),
         CurveSubd_OP(),
+        CurveDecimate_OP(),
         RemoveTwoBorder_OP(),
     ],
 )
