@@ -33,6 +33,10 @@ else:
     importlib.reload(abm)
 
 
+def pp_opname(parent, prefix, p):
+    return parent + "_" + prefix + "_" + p
+
+
 class Mesh_Operator(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
     my_props = []
@@ -53,9 +57,14 @@ class Mesh_Operator(bpy.types.Operator):
         print(self.prefix, self.my_props)
         if self.prefix != "":
             for p in self.my_props:
-                opname = self.parent_name + "_" + self.prefix + "_" + p
-                setattr(self, p, getattr(context.scene, opname))
-                print(opname, getattr(context.scene, opname))
+                opname = pp_opname(self.parent_name, self.prefix, p)
+                panel_value = getattr(context.scene, opname)
+                # setattr(self, p, panel_value)
+                print(self.__annotations__[p])
+                self.__annotations__[p] = panel_value
+                print(opname, panel_value)
+            print(self.bl_idname)
+            print(self.__dict__)
 
         return self.execute(context)
 
@@ -71,8 +80,6 @@ class Mesh_Operator(bpy.types.Operator):
         mesh = context.active_object.data
         self.payload(mesh, context)
         # mesh.update(calc_edges=True)
-
-        # au.profiling_end(self.pr)
 
         return {"FINISHED"}
 
@@ -99,7 +106,9 @@ def mesh_operator_factory(props, prefix, payload, name, parent_name, info):
             "payload": payload,
         },
     )
-    setattr(temp, "__annotations__", props)
+    setattr(temp, "__annotations__", {})
+    for k, v in props.items():
+        temp.__annotations__[k] = v
     return temp
 
 
@@ -190,7 +199,7 @@ class PanelBuilder:
                         for i, p in enumerate(mop.props):
                             if i % 2 == 0:
                                 row = box.row(align=True)
-                            row.prop(context.scene, this.master_name + "_" + mop.prefix + "_" + p)
+                            row.prop(context.scene, pp_opname(this.master_name, mop.prefix, p))
 
         return _pt
 
@@ -198,7 +207,7 @@ class PanelBuilder:
         for mesh_op in self.mesh_ops:
             bpy.utils.register_class(mesh_op.op)
             for k, v in mesh_op.props.items():
-                setattr(bpy.types.Scene, mesh_op.parent_name + "_" + mesh_op.prefix + "_" + k, v)
+                setattr(bpy.types.Scene, pp_opname(mesh_op.parent_name, mesh_op.prefix, k), v)
 
         for k, v in self.panel.items():
             setattr(bpy.types.Scene, self.master_name + "_panel_" + k, v)
@@ -207,7 +216,7 @@ class PanelBuilder:
         for mesh_op in self.mesh_ops:
             bpy.utils.unregister_class(mesh_op.op)
             for k, _ in mesh_op.props.items():
-                delattr(bpy.types.Scene, mesh_op.parent_name + "_" + mesh_op.prefix + "_" + k)
+                delattr(bpy.types.Scene, pp_opname(mesh_op.parent_name, mesh_op.prefix, k))
 
         for k, _ in self.panel.items():
             delattr(bpy.types.Scene, self.master_name + "_panel_" + k)
@@ -394,24 +403,29 @@ class FacePush_OP(Mesh_Master_OP):
                     for v in f.verts:
                         r = self.object.ray_cast(v.co, -f.normal, distance=self.distance)
                         if r[0]:
+                            # above surface
                             nv = r[1] - v.co
-
-                            # didn't hit a backface
-                            if nv.dot(f.normal) > 0:
+                            # didn't hit a back face
+                            if nv.dot(-f.normal) < 0:
                                 locs.append(nv)
-                        # else:
-                        #     r2 = self.object.ray_cast(v.co, -f.normal, distance=self.distance)
-                        #     if r2[0]:
-                        #         locs.append(r2[1] - v.co)
+                        else:
+                            # below surface
+                            r2 = self.object.ray_cast(v.co, f.normal, distance=self.distance)
+                            if r2[0]:
+                                nv = r2[1] - v.co
+                                # didn't hit a front face
+                                if nv.dot(f.normal) > 0:
+                                    locs.append(nv)
 
                     total = mu.Vector((0, 0, 0))
 
-                    # if len(locs) > 0:
-                    #     for l in locs:
-                    #         total += l
-                    #     total /= len(locs)
+                    if len(locs) > 0:
+                        # average of face normals projected from verts
+                        for l in locs:
+                            total += l
+                        total /= len(locs)
 
-                    total += norm
+                    total = (total + norm) / 2
 
                     # move verts
                     for v in f.verts:
@@ -1063,7 +1077,7 @@ bl_info = {
     "description": "Various tools for mesh processing",
     "author": "ambi",
     "location": "3D view > Tools",
-    "version": (1, 1, 5),
+    "version": (1, 1, 6),
     "blender": (2, 80, 0),
 }
 
