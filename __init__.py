@@ -11,155 +11,23 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Created Date: Monday, June 17th 2019, 5:39:09 pm
+Copyright: Tommi Hyppänen
 """
 
-
-import bpy
-import numpy as np
-import bmesh
-from collections import OrderedDict
-import mathutils as mu
-
-# import/reload all source files
-if "afm" not in locals():
-    from .bpy_amb import utils as au
-    from .bpy_amb import fastmesh as afm
-    from .bpy_amb import bbmesh as abm
-else:
-    import importlib
-
-    importlib.reload(au)
-    importlib.reload(afm)
-    importlib.reload(abm)
-
-
-def pp_opname(parent, prefix, p):
-    return parent + "_" + prefix + "_" + p
-
-
-class Mesh_Operator(bpy.types.Operator):
-    bl_options = {"REGISTER", "UNDO"}
-    my_props = []
-    prefix = ""
-    parent_name = ""
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None
-
-    def payload(self, mesh, context):
-        pass
-
-    def invoke(self, context, event):
-        # self.pr = au.profiling_start()
-
-        # copy property values from panel to operator
-        print(self.prefix, self.my_props)
-        if self.prefix != "":
-            for p in self.my_props:
-                opname = pp_opname(self.parent_name, self.prefix, p)
-                panel_value = getattr(context.scene, opname)
-                # setattr(self, p, panel_value)
-                # print(self.__annotations__[p])
-                # self.__annotations__[p] = panel_value
-                # print(opname, panel_value)
-                setattr(self, p, panel_value)
-            print(self.bl_idname)
-
-        return self.execute(context)
-
-    def execute(self, context):
-        # apply modifiers for the active object before mesh actions
-        for mod in context.active_object.modifiers:
-            try:
-                bpy.ops.object.modifier_apply(modifier=mod.name)
-            except RuntimeError as ex:
-                print(ex)
-
-        # run mesh operation
-        mesh = context.active_object.data
-        self.payload(mesh, context)
-        # mesh.update(calc_edges=True)
-
-        return {"FINISHED"}
-
-    def draw(self, context):
-        layout = self.layout
-        col = layout.column()
-
-        for p in self.my_props:
-            row = col.row()
-            row.prop(self, p, expand=True)
-
-
-def mesh_operator_factory(props, prefix, payload, name, parent_name, info):
-    temp = type(
-        name,
-        (Mesh_Operator,),
-        {
-            "bl_idname": "object." + parent_name + "_" + prefix,
-            "bl_label": " ".join(prefix.split("_")).capitalize(),
-            "bl_description": info,
-            "my_props": props.keys(),
-            "prefix": prefix,
-            "parent_name": parent_name,
-            "payload": payload,
-        },
-    )
-    setattr(temp, "__annotations__", {})
-    for k, v in props.items():
-        temp.__annotations__[k] = v
-    return temp
-
-
-class Mesh_Master_OP:
-    def generate(self):
-        pass
-
-    def __init__(self):
-        self.props = OrderedDict()
-        self.parent_name = "mesh_refine_toolbox"
-
-        self.payload = lambda a, b, c: 0
-        self.prefix = ""
-        self.name = ""
-        self.info = ""
-        self.fastmesh = False
-
-        self.generate()
-
-        # wrap Bmesh
-        if not self.fastmesh:
-
-            def _bm_from_selected(ifunc):
-                def _f(this, mesh, context):
-                    with abm.Bmesh_from_edit(mesh) as bm:
-                        ifunc(this, bm, context)
-
-                return _f
-
-            self.payload = _bm_from_selected(self.payload)
-
-            # wrap mode switching
-            def _mode_switch(ifunc):
-                def _f(this, mesh, context):
-                    mode = context.object.mode
-                    bpy.ops.object.mode_set(mode="EDIT")
-                    ifunc(this, mesh, context)
-                    bpy.ops.object.mode_set(mode=mode)
-
-                return _f
-
-            self.payload = _mode_switch(self.payload)
-
-        self.op = mesh_operator_factory(self.props, self.prefix, self.payload, self.name, self.parent_name, self.info)
+from .def_imports import *  # noqa:F403
+import numba
+import time
 
 
 class PanelBuilder:
     def __init__(self, master_name, mesh_ops):
         self.panel = {
             i.prefix: bpy.props.BoolProperty(
-                name=i.prefix.capitalize() + " settings", description="Display settings of the tool", default=False
+                name=i.prefix.capitalize() + " settings",
+                description="Display settings of the tool",
+                default=False,
             )
             for i in mesh_ops
         }
@@ -167,10 +35,14 @@ class PanelBuilder:
         self.master_name = master_name
         self.mesh_ops = mesh_ops
 
-    def create_panel(this):  # pylint: disable=E0213
+    def create_panel(this):
         class _pt(bpy.types.Panel):
             bl_label = " ".join([i.capitalize() for i in this.master_name.split("_")])
-            bl_idname = "OBUILD_PT_" + "".join([i.capitalize() for i in this.master_name.split("_")]) + "_panel"
+            bl_idname = (
+                "OBUILD_PT_"
+                + "".join([i.capitalize() for i in this.master_name.split("_")])
+                + "_panel"
+            )
 
             bl_space_type = "VIEW_3D"
             bl_region_type = "UI"
@@ -192,13 +64,16 @@ class PanelBuilder:
                         else:
                             split.prop(context.scene, opname, text="", icon="RIGHTARROW")
 
-                    split.operator(mop.op.bl_idname, text=" ".join(mop.prefix.split("_")).capitalize())
+                    split.operator(
+                        mop.op.bl_idname, text=" ".join(mop.prefix.split("_")).capitalize()
+                    )
 
                     if getattr(context.scene, opname):
                         box = col.column(align=True).box().column()
                         for i, p in enumerate(mop.props):
-                            if i % 2 == 0:
-                                row = box.row(align=True)
+                            # if i % 2 == 0:
+                            #     row = box.row(align=True)
+                            row = box.row(align=True)
                             row.prop(context.scene, pp_opname(this.master_name, mop.prefix, p))
 
         return _pt
@@ -302,7 +177,9 @@ class CropToLarge_OP(Mesh_Master_OP):
 
 class MergeTiny_OP(Mesh_Master_OP):
     def generate(self):
-        self.props["threshold"] = bpy.props.FloatProperty(name="Threshold", default=0.02, min=0.0, max=1.0)
+        self.props["threshold"] = bpy.props.FloatProperty(
+            name="Threshold", default=0.02, min=0.0, max=1.0
+        )
 
         self.prefix = "merge_tiny_faces"
         self.name = "OBJECT_OT_MergeTinyFaces"
@@ -325,7 +202,9 @@ class MergeTiny_OP(Mesh_Master_OP):
 class EvenEdges_OP(Mesh_Master_OP):
     def generate(self):
         self.props["amount"] = bpy.props.FloatProperty(name="Amount", default=1.0, min=0.0, max=1.0)
-        self.props["iterations"] = bpy.props.IntProperty(name="Iterations", default=1, min=1, max=20)
+        self.props["iterations"] = bpy.props.IntProperty(
+            name="Iterations", default=1, min=1, max=20
+        )
 
         self.prefix = "make_even_edges"
         self.name = "OBJECT_OT_MakeEvenEdges"
@@ -438,7 +317,9 @@ class EdgeSmooth_OP(Mesh_Master_OP):
     def generate(self):
         self.props["border"] = bpy.props.BoolProperty(name="Exclude border", default=True)
         self.props["iter"] = bpy.props.IntProperty(name="Iterations", default=2, min=1, max=10)
-        self.props["thres"] = bpy.props.FloatProperty(name="Threshold", default=0.95, min=0.0, max=1.0)
+        self.props["thres"] = bpy.props.FloatProperty(
+            name="Threshold", default=0.95, min=0.0, max=1.0
+        )
 
         self.prefix = "edge_smooth"
         self.name = "OBJECT_OT_EdgeSmooth"
@@ -529,7 +410,8 @@ class EdgeSmooth_OP(Mesh_Master_OP):
                         new_verts[-1] = new_loc / len(projected)
 
                     # move towards average valid 1-ring plane
-                    # TODO: this should project to new normal (from coplanar norms), not old v.normal
+                    # TODO: this should project to new normal (from coplanar norms),
+                    # not old v.normal
                     # new_verts[-1] = v.co
                     # if len(coplanar) > 0:
                     #     total = mu.Vector([0.0, 0.0, 0.0])
@@ -550,7 +432,46 @@ class EdgeSmooth_OP(Mesh_Master_OP):
 
 
 class Mechanize_OP(Mesh_Master_OP):
+    # @numba.jit
+    def _nb(self, iverts, ring1s, norms):
+        for v_i in range(iverts.shape[0]):
+            v = iverts[v_i]
+            ring1 = np.array(ring1s[v_i])
+            projected = []
+            distances = np.empty((len(ring1),))
+            for rv_i, rv in enumerate(ring1):
+                nv = rv - v
+                dist = nv.dot(norms[v_i])
+                distances[rv_i] = abs(dist) / np.linalg.norm(nv)
+                projected.append(rv - dist * norms[v_i])
+
+            # nv = ring1 - v
+            # dist = nv.dot(norms[v_i])
+            # distances = np.abs(dist) / np.linalg.norm(nv)
+            # projected = ring1 - np.array([d * norms[v_i] for d in dist])
+
+            dist_sum = np.sum(distances)
+            new_loc = np.zeros((3,))
+
+            if dist_sum / len(projected) > 0.02:
+                for i, p in enumerate(projected):
+                    new_loc += p * distances[i] / dist_sum
+            else:
+                for i, p in enumerate(projected):
+                    new_loc += p
+                new_loc /= len(projected)
+
+            iverts[v_i] = new_loc
+
     def generate(self):
+
+        """
+        1. find difference vectors (D) to one ring (R)
+        2. divide angle between vertex normal (N) and difference vector (A) with diff vec length (D.len)
+        3. projected vectors (P) = R - D * N
+        4. new vertex location (V) = V + P[i] * distances[i] / sum(distances)
+        """
+
         self.props["border"] = bpy.props.BoolProperty(name="Exclude border", default=True)
         self.props["iter"] = bpy.props.IntProperty(name="Iterations", default=2, min=1, max=50)
 
@@ -587,10 +508,6 @@ class Mechanize_OP(Mesh_Master_OP):
                         distances.append(abs(dist) / nv.length)
                         projected.append(rv.co - dist * v.normal)
 
-                    # dist_min = min(distances)
-                    # for i in range(len(distances)):
-                    #     distances[i] += dist_min
-
                     dist_sum = sum(distances)
                     new_loc = mu.Vector([0.0, 0.0, 0.0])
 
@@ -609,7 +526,9 @@ class Mechanize_OP(Mesh_Master_OP):
 
 class CleanupThinFace_OP(Mesh_Master_OP):
     def generate(self):
-        self.props["threshold"] = bpy.props.FloatProperty(name="Threshold", default=0.95, min=0.0, max=1.0)
+        self.props["threshold"] = bpy.props.FloatProperty(
+            name="Threshold", default=0.95, min=0.0, max=1.0
+        )
         self.props["repeat"] = bpy.props.IntProperty(name="Repeat", default=2, min=0, max=10)
 
         self.prefix = "cleanup_thin_faces"
@@ -657,7 +576,9 @@ class Cleanup_OP(Mesh_Master_OP):
         self.props["fillface"] = bpy.props.BoolProperty(name="Fill faces", default=True)
         self.prefix = "cleanup_triface"
         self.name = "OBJECT_OT_CleanupTriface"
-        self.info = "Removes all edges with more than two faces and tries to rebuild the surrounding mesh"
+        self.info = (
+            "Removes all edges with more than two faces and tries to rebuild the surrounding mesh"
+        )
 
         def _pl(self, bm, context):
             # deselect all
@@ -789,7 +710,12 @@ class Cleanup_OP(Mesh_Master_OP):
                 smooth_verts = list(set(smooth_verts))
                 print(len(smooth_verts), "smoothed verts")
                 bmesh.ops.smooth_vert(
-                    bm, verts=smooth_verts, factor=1.0, use_axis_x=True, use_axis_y=True, use_axis_z=True
+                    bm,
+                    verts=smooth_verts,
+                    factor=1.0,
+                    use_axis_x=True,
+                    use_axis_y=True,
+                    use_axis_z=True,
                 )
 
                 # cleanup faces with no other face connections
@@ -844,7 +770,9 @@ class MeshNoise_OP(Mesh_Master_OP):
                 df = lambda x: x[0]
 
             for v in bm.verts:
-                d, _ = mu.noise.voronoi(v.co * self.scale, distance_metric=self.noisetype, exponent=2.5)
+                d, _ = mu.noise.voronoi(
+                    v.co * self.scale, distance_metric=self.noisetype, exponent=2.5
+                )
                 v.co += v.normal * df(d) * self.amount
 
         self.payload = _pl
@@ -852,7 +780,9 @@ class MeshNoise_OP(Mesh_Master_OP):
 
 class EdgesToCurve_OP(Mesh_Master_OP):
     def generate(self):
-        self.props["balance"] = bpy.props.FloatProperty(name="Balance", default=0.99, min=0.0, max=1.0)
+        self.props["balance"] = bpy.props.FloatProperty(
+            name="Balance", default=0.99, min=0.0, max=1.0
+        )
 
         self.prefix = "optimal_edge_flip"
         self.name = "OBJECT_OT_EdgesToCurve"
@@ -884,9 +814,9 @@ class EdgesToCurve_OP(Mesh_Master_OP):
                     diff_01 = v0.co - v1.co
                     if diff_01.length == 0:
                         continue
-                    best = e_len * ((v0.normal.dot(v1.normal) + 1) / 2) * self.balance + (e_len / (diff_01).length) * (
-                        1.0 - self.balance
-                    )
+                    best = e_len * ((v0.normal.dot(v1.normal) + 1) / 2) * self.balance + (
+                        e_len / (diff_01).length
+                    ) * (1.0 - self.balance)
                     rotations = 0
 
                     # select vert that from which you take the next step doesn't end
@@ -930,7 +860,9 @@ class EdgesToCurve_OP(Mesh_Master_OP):
 
 class SplitQuads_OP(Mesh_Master_OP):
     def generate(self):
-        self.props["thres"] = bpy.props.FloatProperty(name="Threshold", default=0.5, min=0.0, max=1.0)
+        self.props["thres"] = bpy.props.FloatProperty(
+            name="Threshold", default=0.5, min=0.0, max=1.0
+        )
         self.props["normals"] = bpy.props.BoolProperty(name="Use Normals", default=False)
 
         self.prefix = "split_quads"
@@ -989,9 +921,13 @@ class SplitQuads_OP(Mesh_Master_OP):
 
 class RebuildQuads_OP(Mesh_Master_OP):
     def generate(self):
-        self.props["decimate"] = bpy.props.FloatProperty(name="Decimate", default=0.1, min=0.0, max=1.0)
-        # self.props['subdivide'] = bpy.props.IntProperty(name="Subdivide", default=1, min=1, max=10)
-        # self.props['quadstep'] = bpy.props.FloatProperty(name="Quad Angle", default=4.0, min=0.0, max=4.0)
+        self.props["decimate"] = bpy.props.FloatProperty(
+            name="Decimate", default=0.1, min=0.0, max=1.0
+        )
+        # self.props['subdivide'] = bpy.props.IntProperty(name="Subdivide",
+        # default=1, min=1, max=10)
+        # self.props['quadstep'] = bpy.props.FloatProperty(name="Quad Angle",
+        # default=4.0, min=0.0, max=4.0)
         # self.props['smooth'] = bpy.props.BoolProperty(name="Smooth", default=True)
 
         self.prefix = "rebuild_quads"
@@ -1063,12 +999,13 @@ class RebuildQuads_OP(Mesh_Master_OP):
 
             bpy.ops.object.mode_set(mode="EDIT")
             bpy.ops.mesh.select_all(action="SELECT")
-            # bpy.ops.mesh.tris_convert_to_quads(face_threshold=self.quadstep, shape_threshold=self.quadstep)
+            # bpy.ops.mesh.tris_convert_to_quads(
+            # face_threshold=self.quadstep, shape_threshold=self.quadstep)
             bpy.ops.mesh.tris_convert_to_quads(face_threshold=3.14159, shape_threshold=3.14159)
             # bpy.ops.object.mesh_refine_toolbox_split_quads(thres=1.0, normals=True)
             bpy.ops.object.mode_set(mode="OBJECT")
 
-            # _ = ob.modifiers.new(name="Subd", type="SUBSURF")
+            _ = ob.modifiers.new(name="Subd", type="SUBSURF")
             m_swrp = ob.modifiers.new(name="Shrinkwrap", type="SHRINKWRAP")
             # m_swrp.wrap_method = 'PROJECT'
             # m_swrp.cull_face = 'FRONT'
@@ -1183,7 +1120,9 @@ class CurveSubd_OP(Mesh_Master_OP):
 
 class CurveDecimate_OP(Mesh_Master_OP):
     def generate(self):
-        self.props["thres"] = bpy.props.FloatProperty(name="Threshold", default=0.1, min=0.0, max=1.0)
+        self.props["thres"] = bpy.props.FloatProperty(
+            name="Threshold", default=0.1, min=0.0, max=1.0
+        )
 
         self.prefix = "curve_decimate"
         self.name = "OBJECT_OT_CurveDecimate"
@@ -1249,7 +1188,8 @@ class CurveDecimate_OP(Mesh_Master_OP):
             #             # verts.add(e.verts[0].index)
             #             # verts.add(e.verts[1].index)
             #             # connected = set()
-            #             neighbourhood = set(abm.vert_vert(e.verts[0])) | set(abm.vert_vert(e.verts[1]))
+            #             neighbourhood = set(abm.vert_vert(e.verts[0])) |
+            # set(abm.vert_vert(e.verts[1]))
 
             #             for v in list(neighbourhood):
             #                 verts.add(v.index)
@@ -1325,7 +1265,7 @@ bl_info = {
     "description": "Various tools for mesh processing",
     "author": "ambi",
     "location": "3D view > Tools",
-    "version": (1, 1, 6),
+    "version": (1, 1, 8),
     "blender": (2, 80, 0),
 }
 
@@ -1351,6 +1291,7 @@ pbuild = PanelBuilder(
         RemoveTwoBorder_OP(),
     ],
 )
+
 OBUILD_PT_MeshRefineToolbox = pbuild.create_panel()
 
 
