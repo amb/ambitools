@@ -17,8 +17,9 @@ Copyright: Tommi Hyppänen
 """
 
 from .def_imports import *  # noqa:F403
-import numba
-import time
+from collections import defaultdict
+# import numba
+# import time
 
 
 class PanelBuilder:
@@ -31,6 +32,12 @@ class PanelBuilder:
             )
             for i in mesh_ops
         }
+
+        self.categories = set()
+        self.draw_order = defaultdict(list)
+        for i in mesh_ops:
+            self.categories.add(i.category)
+            self.draw_order[i.category].append(i)
 
         self.master_name = master_name
         self.mesh_ops = mesh_ops
@@ -50,31 +57,34 @@ class PanelBuilder:
 
             def draw(self, context):
                 layout = self.layout
-                col = layout.column(align=True)
+                mcol = layout
 
-                for mop in this.mesh_ops:
-                    split = col.split(factor=0.15, align=True)
-                    opname = this.master_name + "_panel_" + mop.prefix
+                for cat in this.draw_order.keys():
+                    col = mcol.box().column(align=True)
+                    col.label(text=cat)
+                    for mop in this.draw_order[cat]:
+                        split = col.split(factor=0.15, align=True)
+                        opname = this.master_name + "_panel_" + mop.prefix
 
-                    if len(mop.props) == 0:
-                        split.prop(context.scene, opname, text="", icon="DOT")
-                    else:
-                        if getattr(context.scene, opname):
-                            split.prop(context.scene, opname, text="", icon="DOWNARROW_HLT")
+                        if len(mop.props) == 0:
+                            split.prop(context.scene, opname, text="", icon="DOT")
                         else:
-                            split.prop(context.scene, opname, text="", icon="RIGHTARROW")
+                            if getattr(context.scene, opname):
+                                split.prop(context.scene, opname, text="", icon="DOWNARROW_HLT")
+                            else:
+                                split.prop(context.scene, opname, text="", icon="RIGHTARROW")
 
-                    split.operator(
-                        mop.op.bl_idname, text=" ".join(mop.prefix.split("_")).capitalize()
-                    )
+                        split.operator(
+                            mop.op.bl_idname, text=" ".join(mop.prefix.split("_")).capitalize()
+                        )
 
-                    if getattr(context.scene, opname):
-                        box = col.column(align=True).box().column()
-                        for i, p in enumerate(mop.props):
-                            # if i % 2 == 0:
-                            #     row = box.row(align=True)
-                            row = box.row(align=True)
-                            row.prop(context.scene, pp_opname(this.master_name, mop.prefix, p))
+                        if getattr(context.scene, opname):
+                            box = col.column(align=True).box().column()
+                            for i, p in enumerate(mop.props):
+                                # if i % 2 == 0:
+                                #     row = box.row(align=True)
+                                row = box.row(align=True)
+                                row.prop(context.scene, pp_opname(this.master_name, mop.prefix, p))
 
         return _pt
 
@@ -110,6 +120,8 @@ class MaskedSmooth_OP(Mesh_Master_OP):
         self.name = "OBJECT_OT_Maskedsmooth"
 
         self.fastmesh = True
+
+        self.category = "Filter"
 
         def _pl(self, mesh, context):
             verts = afm.read_verts(mesh)
@@ -151,6 +163,8 @@ class CropToLarge_OP(Mesh_Master_OP):
         self.name = "OBJECT_OT_CropToLarge"
         self.info = "Removes all tiniest disconnected pieces up to specified amount"
 
+        self.category = "Cleanup"
+
         def _pl(self, bm, context):
             shells = abm.mesh_get_edge_connection_shells(bm)
             print(len(shells), "shells")
@@ -185,6 +199,8 @@ class MergeTiny_OP(Mesh_Master_OP):
         self.name = "OBJECT_OT_MergeTinyFaces"
         self.info = "Collapse faces with smaller perimeter than defined"
 
+        self.category = "Cleanup"
+
         def _pl(self, bm, context):
             # thin faces
             collapse_these = []
@@ -210,6 +226,8 @@ class EvenEdges_OP(Mesh_Master_OP):
         self.name = "OBJECT_OT_MakeEvenEdges"
         self.info = "Attempts to equalize edge lengths"
 
+        self.category = "Filter"
+
         def _pl(self, bm, context):
             avg = sum(e.calc_length() for e in bm.edges) / len(bm.edges)
             for _ in range(self.iterations):
@@ -230,6 +248,8 @@ class SurfaceSmooth_OP(Mesh_Master_OP):
         self.prefix = "surface_smooth"
         self.name = "OBJECT_OT_SurfaceSmooth"
         self.info = "Smoothing along mesh surface"
+
+        self.category = "Filter"
 
         def _pl(self, bm, context):
             limit_verts = set([])
@@ -269,6 +289,8 @@ class FacePush_OP(Mesh_Master_OP):
         self.prefix = "face_push"
         self.name = "OBJECT_OT_FacePush"
         self.info = "Push faces to match a surface"
+
+        self.category = "Filter"
 
         def _pl(self, bm, context):
             for f in bm.faces:
@@ -323,6 +345,8 @@ class EdgeSmooth_OP(Mesh_Master_OP):
 
         self.prefix = "edge_smooth"
         self.name = "OBJECT_OT_EdgeSmooth"
+
+        self.category = "Filter"
 
         def _pl(self, bm, context):
             limit_verts = set([])
@@ -467,7 +491,8 @@ class Mechanize_OP(Mesh_Master_OP):
 
         """
         1. find difference vectors (D) to one ring (R)
-        2. divide angle between vertex normal (N) and difference vector (A) with diff vec length (D.len)
+        2. divide angle between vertex normal (N) and difference vector (A) with
+           diff vec length (D.len)
         3. projected vectors (P) = R - D * N
         4. new vertex location (V) = V + P[i] * distances[i] / sum(distances)
         """
@@ -478,6 +503,8 @@ class Mechanize_OP(Mesh_Master_OP):
         self.prefix = "mechanize"
         self.name = "OBJECT_OT_Mechanize"
         self.info = "Artistic mesh processing, going for a chiseled look"
+
+        self.category = "Filter"
 
         def _pl(self, bm, context):
             limit_verts = set([])
@@ -535,6 +562,8 @@ class CleanupThinFace_OP(Mesh_Master_OP):
         self.name = "OBJECT_OT_CleanupThinFace"
         self.info = "Collapse thin faces"
 
+        self.category = "Cleanup"
+
         def _pl(self, bm, context):
             thr = self.threshold
 
@@ -579,6 +608,8 @@ class Cleanup_OP(Mesh_Master_OP):
         self.info = (
             "Removes all edges with more than two faces and tries to rebuild the surrounding mesh"
         )
+
+        self.category = "Cleanup"
 
         def _pl(self, bm, context):
             # deselect all
@@ -758,6 +789,8 @@ class MeshNoise_OP(Mesh_Master_OP):
         self.name = "OBJECT_OT_MeshNoise"
         self.info = "Various noise functions that can be instantly applied on the mesh"
 
+        self.category = "Filter"
+
         def _pl(self, bm, context):
             df = None
             if self.noisef == "21":
@@ -787,6 +820,8 @@ class EdgesToCurve_OP(Mesh_Master_OP):
         self.prefix = "optimal_edge_flip"
         self.name = "OBJECT_OT_EdgesToCurve"
         self.info = "Rotates edges to find optimal local curvature description"
+
+        self.category = "Refine"
 
         def _pl(self, bm, context):
             traversed = np.zeros((len(bm.edges)), dtype=np.bool)
@@ -869,6 +904,8 @@ class SplitQuads_OP(Mesh_Master_OP):
         self.name = "OBJECT_OT_SplitQuads"
         self.info = "Triangulates quads, using thresholds and angles"
 
+        self.category = "Refine"
+
         def _pl(self, bm, context):
             for f in bm.faces:
                 # for all quads
@@ -936,6 +973,8 @@ class RebuildQuads_OP(Mesh_Master_OP):
             "Rebuilds mesh with quads by first decimating and making quads from triangles.\n"
             "Then subdividing and projecting to surface with shrinkwrap"
         )
+
+        self.category = "Refine"
 
         def _pl(self, bm, context):
             indices = [v.index for v in bm.verts]
@@ -1030,6 +1069,8 @@ class RemoveTwoBorder_OP(Mesh_Master_OP):
         self.name = "OBJECT_OT_RemoveTwoBorder"
         self.info = "Removes all faces that have more than two non-manifold borders"
 
+        self.category = "Cleanup"
+
         def _pl(self, bm, context):
             selected_faces = []
             for f in bm.faces:
@@ -1057,6 +1098,8 @@ class CurveSubd_OP(Mesh_Master_OP):
         self.prefix = "curve_subd"
         self.name = "OBJECT_OT_CurveSubd"
         self.info = "Subdivide according to curvature maintaining the position of original points"
+
+        self.category = "Refine"
 
         def _pl(self, bm, context):
             orig_verts = [v.index for v in bm.verts]
@@ -1127,6 +1170,8 @@ class CurveDecimate_OP(Mesh_Master_OP):
         self.prefix = "curve_decimate"
         self.name = "OBJECT_OT_CurveDecimate"
         self.info = "Decimate according to curvature"
+
+        self.category = "Refine"
 
         def _pl(self, bm, context):
             # for i in range(5):

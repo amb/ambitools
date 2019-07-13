@@ -170,4 +170,3 @@ class Mesh_Master_OP:
         self.op = mesh_operator_factory(
             self.props, self.prefix, self.payload, self.name, self.parent_name, self.info
         )
-
