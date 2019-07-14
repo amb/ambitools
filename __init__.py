@@ -18,6 +18,7 @@ Copyright: Tommi Hyppänen
 
 from .def_imports import *  # noqa:F403
 from collections import defaultdict
+
 # import numba
 # import time
 
@@ -1167,6 +1168,8 @@ class CurveDecimate_OP(Mesh_Master_OP):
             name="Threshold", default=0.1, min=0.0, max=1.0
         )
 
+        self.props["factor"] = bpy.props.FloatProperty(name="Factor", default=0.1, min=0.0, max=1.0)
+
         self.prefix = "curve_decimate"
         self.name = "OBJECT_OT_CurveDecimate"
         self.info = "Decimate according to curvature"
@@ -1294,12 +1297,60 @@ class CurveDecimate_OP(Mesh_Master_OP):
             m_decimate = ob.modifiers.new(name="Decimate", type="DECIMATE")
             m_decimate.ratio = self.thres
             m_decimate.vertex_group = vg.name
-            m_decimate.vertex_group_factor = 10.0
+            m_decimate.vertex_group_factor = 10.0 * (self.factor ** 4.0)
             m_decimate.invert_vertex_group = True
 
             # bpy.ops.object.modifier_apply(modifier=m_decimate.name)
 
             bpy.ops.object.mode_set(mode="EDIT")
+
+        self.payload = _pl
+
+
+class SelectHidden_OP(Mesh_Master_OP):
+    def generate(self):
+        self.props["offset"] = bpy.props.FloatProperty(
+            name="Offset", default=0.005, min=0.0, max=1.0
+        )
+
+        self.prefix = "select_hidden"
+        self.name = "OBJECT_OT_SelectHidden"
+        self.info = "Select hidden"
+
+        self.category = "Select"
+
+        import mathutils.bvhtree as bvht
+
+        def _pl(self, bm, context):
+            bvh = bvht.BVHTree.FromBMesh(bm)
+
+            for f in bm.faces:
+                f.select = True
+
+            def ray_sample(f):
+                center = f.calc_center_median()
+                normal = f.normal
+                component_A = mu.Vector([normal[1], -normal[0], normal[2]])
+                component_B = normal.cross(component_A).normalized()
+                assert normal.cross(component_A).dot(normal) < 0.001
+                center += normal * self.offset
+                casts = []
+                casts.append(bvh.ray_cast(center, normal))
+                casts.append(bvh.ray_cast(center, (normal + component_A).normalized()))
+                casts.append(bvh.ray_cast(center, (normal - component_A).normalized()))
+                casts.append(bvh.ray_cast(center, (normal + component_B).normalized()))
+                casts.append(bvh.ray_cast(center, (normal - component_B).normalized()))
+                return casts
+
+            # try to ray cast into the open world
+            for f in bm.faces:
+                if not all(r[0] for r in ray_sample(f)):
+                    f.select = False
+
+            # ray cast to find any unselected faces
+            for f in bm.faces:
+                if any(bm.faces[i[2]].select == False for i in ray_sample(f) if i[0] is not None):
+                    f.select = False
 
         self.payload = _pl
 
@@ -1310,7 +1361,7 @@ bl_info = {
     "description": "Various tools for mesh processing",
     "author": "ambi",
     "location": "3D view > Tools",
-    "version": (1, 1, 8),
+    "version": (1, 1, 9),
     "blender": (2, 80, 0),
 }
 
@@ -1334,6 +1385,7 @@ pbuild = PanelBuilder(
         CurveSubd_OP(),
         CurveDecimate_OP(),
         RemoveTwoBorder_OP(),
+        SelectHidden_OP(),
     ],
 )
 
