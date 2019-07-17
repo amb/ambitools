@@ -19,6 +19,18 @@ Copyright: Tommi Hyppänen
 # import numba
 # import time
 
+
+bl_info = {
+    "name": "Mesh Refine Toolbox",
+    "category": "Mesh",
+    "description": "Various tools for mesh processing",
+    "author": "ambi",
+    "location": "3D view > Tools",
+    "version": (1, 1, 11),
+    "blender": (2, 80, 0),
+}
+
+
 print("Import: __init__.py")
 
 import bpy  # noqa:F401
@@ -34,6 +46,7 @@ if "afm" not in locals():
     from .bpy_amb import fastmesh as afm  # noqa:F401
     from .bpy_amb import bbmesh as abm  # noqa:F401
     from .bpy_amb import raycast  # noqa:F401
+    from .bpy_amb import vcol
     from . import mesh_ops  # noqa:F401
 else:
     import importlib
@@ -44,6 +57,7 @@ else:
     importlib.reload(abm)
     importlib.reload(raycast)
     importlib.reload(mesh_ops)
+    importlib.reload(vcol)
 
 from collections import defaultdict
 
@@ -53,28 +67,30 @@ class PanelBuilder:
         mesh_ops = [i(master_name) for i in input_ops]
 
         # inject panel functionality into operators
-        def _inject(cl):
-            def invoke(self, context, event):
-                # copy property values from panel to operator
-                if self.prefix != "":
-                    for p in self.my_props:
-                        opname = self.parent_name + "_" + self.prefix + "_" + p
-                        panel_value = getattr(context.scene, opname)
-                        setattr(self, p, panel_value)
-                return self.execute(context)
+        # def _inject(cl):
+        #     def invoke(self, context, event):
+        #         # copy property values from panel to operator
+        #         if self.prefix != "":
+        #             for p in self.my_props:
+        #                 opname = self.parent_name + "_" + self.prefix + "_" + p
+        #                 print(opname)
+        #                 panel_value = getattr(context.scene, opname)
+        #                 setattr(self, p, panel_value)
+        #         return self.execute(context)
 
-            def draw(self, context):
-                layout = self.layout
-                col = layout.column()
+        #     def draw(self, context):
+        #         layout = self.layout
+        #         col = layout.column()
 
-                for p in self.my_props:
-                    row = col.row()
-                    row.prop(self, p, expand=True)
-            cl.draw = draw
-            cl.invoke = invoke
+        #         for p in self.my_props:
+        #             row = col.row()
+        #             row.prop(self, p, expand=True)
 
-        for m in mesh_ops:
-            _inject(m)
+        #     cl.draw = draw
+        #     cl.invoke = invoke
+
+        # for m in mesh_ops:
+        #     _inject(m)
 
         # ---
         self.panel = {
@@ -1378,40 +1394,156 @@ class SelectHidden_OP(mesh_ops.MeshOperatorGenerator):
         self.payload = _pl
 
 
-bl_info = {
-    "name": "Mesh Refine Toolbox",
-    "category": "Mesh",
-    "description": "Various tools for mesh processing",
-    "author": "ambi",
-    "location": "3D view > Tools",
-    "version": (1, 1, 9),
-    "blender": (2, 80, 0),
-}
+class RandomToVCOL_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["blur"] = bpy.props.IntProperty(name="Blur", default=1, min=0, max=10)
+
+        self.prefix = "random_to_vcol"
+        self.info = "Random to vertex colors"
+        self.fastmesh = True
+        self.category = "Vertex data"
+
+        def _pl(self, mesh, context):
+            verts = afm.read_verts(mesh)
+            edges = afm.read_edges(mesh)
+
+            curve = np.random.random((len(mesh.vertices), 4))
+            curve[:, 3] = 1.0
+
+            curve[:, 0] = afm.mesh_smooth_filter_variable(curve[:, 0], verts, edges, self.blur)
+            curve[:, 1] = afm.mesh_smooth_filter_variable(curve[:, 1], verts, edges, self.blur)
+            curve[:, 2] = afm.mesh_smooth_filter_variable(curve[:, 2], verts, edges, self.blur)
+
+            vcol.write_colors("Random", curve, mesh)
+
+        self.payload = _pl
 
 
-pbuild = PanelBuilder(
-    "mesh_refine_toolbox",
-    [
-        Mechanize_OP,
-        SurfaceSmooth_OP,
-        MaskedSmooth_OP,
-        MergeTiny_OP,
-        CleanupThinFace_OP,
-        Cleanup_OP,
-        CropToLarge_OP,
-        EvenEdges_OP,
-        MeshNoise_OP,
-        EdgesToCurve_OP,
-        SplitQuads_OP,
-        RebuildQuads_OP,
-        FacePush_OP,
-        CurveSubd_OP,
-        CurveDecimate_OP,
-        RemoveTwoBorder_OP,
-        SelectHidden_OP,
-    ],
-)
+class CurvatureToVCOL_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["blur"] = bpy.props.IntProperty(name="Blur", default=1, min=0, max=10)
+        self.props["alt"] = bpy.props.BoolProperty(name="Alt", default=False)
 
+        self.prefix = "curvature_to_vcol"
+        self.info = "Curvature to vertex colors"
+        self.category = "Vertex data"
+        self.fastmesh = True
+
+        def _pl(self, mesh, context):
+            verts = afm.read_verts(mesh)
+            edges = afm.read_edges(mesh)
+            norms = afm.read_norms(mesh)
+
+            curve = afm.calc_curvature(verts, edges, norms) - 0.5
+            curve = afm.mesh_smooth_filter_variable(curve, verts, edges, self.blur)
+
+            if self.alt:
+                curve = np.abs(curve)
+
+            curve -= np.min(curve)
+            curve /= np.max(curve)
+
+            c = np.ones((len(mesh.vertices), 4))
+            c = (c.T * curve.T).T
+            vcol.write_colors("Curvature", c, mesh)
+
+        self.payload = _pl
+
+
+class ThicknessToVCOL_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["blur"] = bpy.props.IntProperty(name="Blur", default=1, min=0, max=10)
+        self.props["offset"] = bpy.props.FloatProperty(
+            name="Offset", default=0.01, min=0.0, max=1.0
+        )
+
+        self.prefix = "thickness_to_vcol"
+        self.info = "Thickness to vertex colors"
+        self.category = "Vertex data"
+        self.fastmesh = True
+
+        def _pl(self, mesh, context):
+            thick = np.zeros(len(mesh.vertices), dtype=np.float64)
+            with au.Mode_set("EDIT"):
+                with abm.Bmesh_from_edit(mesh) as bm:
+                    raycast.init_with_bm(bm)
+
+                    for f in bm.faces:
+                        loc = f.calc_center_median() - self.offset * f.normal
+                        res = raycast.simple_sample(loc, -f.normal)
+
+                        # total distance
+                        total = sum(i[3] for i in res if i[0] is not None)
+
+                        for v in f.verts:
+                            thick[v.index] += total
+
+            verts = afm.read_verts(mesh)
+            edges = afm.read_edges(mesh)
+            thick = afm.mesh_smooth_filter_variable(thick, verts, edges, self.blur)
+
+            thick /= np.max(thick)
+
+            c = np.ones((len(mesh.vertices), 4))
+            c = (c.T * thick.T).T
+            vcol.write_colors("Thickness", c, mesh)
+
+        self.payload = _pl
+
+
+class AmbientOcclusionToVCOL_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["blur"] = bpy.props.IntProperty(name="Blur", default=1, min=0, max=10)
+        self.props["offset"] = bpy.props.FloatProperty(
+            name="Offset", default=0.01, min=0.0, max=1.0
+        )
+        self.props["dist"] = bpy.props.FloatProperty(name="Distance", default=1.0, min=0.0)
+
+        self.prefix = "ao_to_vcol"
+        self.info = "Ambient occlusion to vertex colors"
+        self.category = "Vertex data"
+        self.fastmesh = True
+
+        def _pl(self, mesh, context):
+            ao = np.zeros(len(mesh.vertices), dtype=np.float64)
+            with au.Mode_set("EDIT"):
+                with abm.Bmesh_from_edit(mesh) as bm:
+                    raycast.init_with_bm(bm)
+
+                    for f in bm.faces:
+                        loc = f.calc_center_median() + self.offset * f.normal
+                        res = raycast.simple_sample(loc, f.normal)
+
+                        # total distance
+                        total = sum(
+                            i[3] / self.dist if i[0] is not None and i[3] < self.dist else 1.0
+                            for i in res
+                        )
+
+                        for v in f.verts:
+                            ao[v.index] += total
+
+            verts = afm.read_verts(mesh)
+            edges = afm.read_edges(mesh)
+            ao = afm.mesh_smooth_filter_variable(ao, verts, edges, self.blur)
+
+            ao -= np.min(ao)
+            ao /= np.max(ao)
+
+            c = np.ones((len(mesh.vertices), 4))
+            c = (c.T * ao.T).T
+            vcol.write_colors("AO", c, mesh)
+
+        self.payload = _pl
+
+
+# Detect all relevant classes in namespace
+load_these = []
+for name, obj in locals().copy().items():
+    if hasattr(obj, "__bases__") and obj.__bases__[0].__name__ == "MeshOperatorGenerator":
+        load_these.append(obj)
+
+pbuild = PanelBuilder("mesh_refine_toolbox", load_these)
 OBUILD_PT_MeshRefineToolbox = pbuild.create_panel()
 
 

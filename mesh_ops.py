@@ -34,7 +34,7 @@ else:
     importlib.reload(master_ops)
 
 
-class Mesh_Operator(master_ops.MacroOperator):
+class MeshOperator(master_ops.MacroOperator):
     @classmethod
     def poll(cls, context):
         return context.active_object is not None
@@ -90,4 +90,4 @@ class MeshOperatorGenerator(master_ops.OperatorGenerator):
 
             self.payload = _mode_switch(self.payload)
 
-        self.create_op(Mesh_Operator, "object")
+        self.create_op(MeshOperator, "object")
