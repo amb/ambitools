@@ -31,23 +31,6 @@ class MacroOperator(bpy.types.Operator):
     prefix = ""
     parent_name = ""
 
-    def invoke(self, context, event):
-        # copy property values from panel to operator
-        if self.prefix != "":
-            for p in self.my_props:
-                opname = self.parent_name + "_" + self.prefix + "_" + p
-                panel_value = getattr(context.scene, opname)
-                setattr(self, p, panel_value)
-        return self.execute(context)
-
-    def draw(self, context):
-        layout = self.layout
-        col = layout.column()
-
-        for p in self.my_props:
-            row = col.row()
-            row.prop(self, p, expand=True)
-
 
 class OperatorGenerator:
     def generate(self):
