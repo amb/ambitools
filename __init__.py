@@ -1482,6 +1482,48 @@ class CurvatureToVCOL_OP(mesh_ops.MeshOperatorGenerator):
         self.payload = _pl
 
 
+class CComponentsToVCOL_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["blur"] = bpy.props.IntProperty(name="Blur", default=1, min=0, max=10)
+        self.props["normalize"] = bpy.props.FloatProperty(
+            name="Normalize", default=0.0, min=0.0, max=1.0
+        )
+
+        self.prefix = "ccomp_to_vcol"
+        self.info = "Curvature components to vertex colors"
+        self.category = "Vertex data"
+        self.fastmesh = True
+
+        def _pl(self, mesh, context):
+            verts = afm.read_verts(mesh)
+            edges = afm.read_edges(mesh)
+            norms = afm.read_norms(mesh)
+
+            curve = afm.calc_curvature_vector(verts, edges, norms)
+
+            curve[:, 0] = afm.mesh_smooth_filter_variable(curve[:, 0], verts, edges, self.blur)
+            curve[:, 1] = afm.mesh_smooth_filter_variable(curve[:, 1], verts, edges, self.blur)
+            curve[:, 2] = afm.mesh_smooth_filter_variable(curve[:, 2], verts, edges, self.blur)
+
+            clens = np.linalg.norm(curve, axis=1)
+            curve = (
+                curve * (1.0 - self.normalize) / np.max(clens)
+                + ((curve * self.normalize).T / clens).T
+            )
+
+            curve += 1.0
+            curve /= 2.0
+
+            c = np.empty((len(mesh.vertices), 4))
+            c[:, 0] = curve[:, 0]
+            c[:, 1] = curve[:, 1]
+            c[:, 2] = curve[:, 2]
+            c[:, 3] = 1.0
+            vcol.write_colors("Curvature", c, mesh)
+
+        self.payload = _pl
+
+
 class ThicknessToVCOL_OP(mesh_ops.MeshOperatorGenerator):
     def generate(self):
         self.props["blur"] = bpy.props.IntProperty(name="Blur", default=1, min=0, max=10)
