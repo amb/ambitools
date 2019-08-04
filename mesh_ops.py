@@ -16,16 +16,10 @@ Created Date: Monday, June 17th 2019, 5:39:09 pm
 Copyright: Tommi Hyppänen
 """
 
-print("Import: mesh_ops.py")
-
 import bpy  # noqa:F401
-import numpy as np  # noqa:F401
-import bmesh  # noqa:F401
-from collections import OrderedDict  # noqa:F401
-import mathutils as mu  # noqa:F401
 
 from .bpy_amb import bbmesh as abm  # noqa:F401
-from . import master_ops
+from .bpy_amb import master_ops
 
 import importlib
 
@@ -34,9 +28,10 @@ importlib.reload(master_ops)
 
 
 def create(load_these):
-    pbuild = master_ops.PanelBuilder("mesh_refine_toolbox", load_these)
-    OBUILD_PT_MeshRefineToolbox = pbuild.create_panel("OBUILD", "VIEW_3D", "UI", "Tools")
-    return pbuild.register_params, pbuild.unregister_params, OBUILD_PT_MeshRefineToolbox
+    pbuild = master_ops.PanelBuilder(
+        "mesh_refine_toolbox", load_these, "OBUILD", "VIEW_3D", "UI", "Tools"
+    )
+    return pbuild.register_params, pbuild.unregister_params
 
 
 class MeshOperator(master_ops.MacroOperator):
