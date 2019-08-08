@@ -1221,18 +1221,18 @@ class DistanceToVCOL_OP(mesh_ops.MeshOperatorGenerator):
 
             verts = afm.read_verts_bm(bm)
             edges = afm.read_edges_bm(bm)
-            distance = afm.mesh_smooth_filter_variable_limit(distance, verts, edges, 50, 0.9)
-            distmin = np.min(distance)
-            print(distmin)
 
-            distance -= np.min(distance)
+            N = 100
+            # protect = distance.copy()
+            while True:
+                distance = afm.mesh_smooth_filter_variable_limit(distance, verts, edges, N, 0.5)
+                if True:  # np.min(distance) > 0.0:
+                    break
+
+            # varadhan, keenan crane heat method
+            # yes, it's very imprecise but it sort of works *shrug*
+            distance = np.sqrt(-np.log(distance))
             distance /= np.max(distance)
-
-            distance **= 0.02
-            distance = afm.mesh_smooth_filter_variable(distance, verts, edges, 1)
-
-            distance[distance < 0.0] = 0.0
-            distance[distance > 1.0] = 1.0
 
             c = np.ones((len(bm.verts), 4))
             c = (c.T * distance.T).T
