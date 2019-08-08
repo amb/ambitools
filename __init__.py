@@ -1,20 +1,20 @@
-﻿"""
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+﻿# -*- coding:utf-8 -*-
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-Created Date: Monday, June 17th 2019, 5:39:09 pm
-Copyright: Tommi Hyppänen
-"""
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# Created Date: Monday, April 22nd 2019, 4:30:33 pm
+# Copyright: Tommi Hyppänen
 
 # import numba
 # import time
@@ -42,6 +42,7 @@ import mathutils as mu  # noqa:F401
 # import/reload all source files
 from .bpy_amb import utils as au
 import importlib
+
 importlib.reload(au)
 au.keep_updated(
     locals(),
@@ -1199,6 +1200,43 @@ class AmbientOcclusionToVCOL_OP(mesh_ops.MeshOperatorGenerator):
             c = np.ones((len(mesh.vertices), 4))
             c = (c.T * ao.T).T
             vcol.write_colors("AO", c, mesh)
+
+        self.payload = _pl
+
+
+class DistanceToVCOL_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["dist"] = bpy.props.FloatProperty(name="Distance", default=1.0, min=0.0)
+
+        self.prefix = "distance_to_vcol"
+        self.info = "Distance to selected to vertex colors"
+        self.category = "Vertex data"
+        # self.fastmesh = True
+
+        def _pl(self, bm, context):
+            distance = np.zeros(len(bm.verts), dtype=np.float64)
+            for i, v in enumerate(bm.verts):
+                if v.select:
+                    distance[i] = 1.0
+
+            verts = afm.read_verts_bm(bm)
+            edges = afm.read_edges_bm(bm)
+            distance = afm.mesh_smooth_filter_variable_limit(distance, verts, edges, 50, 0.9)
+            distmin = np.min(distance)
+            print(distmin)
+
+            distance -= np.min(distance)
+            distance /= np.max(distance)
+
+            distance **= 0.02
+            distance = afm.mesh_smooth_filter_variable(distance, verts, edges, 1)
+
+            distance[distance < 0.0] = 0.0
+            distance[distance > 1.0] = 1.0
+
+            c = np.ones((len(bm.verts), 4))
+            c = (c.T * distance.T).T
+            vcol.write_colors_bm("Distance", c, bm)
 
         self.payload = _pl
 
