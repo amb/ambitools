@@ -1275,8 +1275,7 @@ class ReactionDiffusionVCOL_OP(mesh_ops.MeshOperatorGenerator):
             coeff = 1.0 / np.where(tvlen < 0.00001, 0.00001, tvlen)
 
             def lap(p):
-                l = afm.mesh_data_laplacian_simple(p, edges)
-                return l
+                return afm.mesh_data_laplacian_simple(p, edges)
 
             # A = np.random.random(size=len(bm.verts))
             A = np.ones(shape=(len(bm.verts),))
