@@ -1229,7 +1229,12 @@ class DistanceToVCOL_OP(mesh_ops.MeshOperatorGenerator):
                 if True:  # np.min(distance) > 0.0:
                     break
 
-            # varadhan, keenan crane heat method
+            # distance -= np.min(distance)
+            # distance += 0.0000000000000001
+            # distance /= np.max(distance)
+
+            # varadhan, from keenan crane heat method
+            # TODO: vector fiels, solve Poisson
             # yes, it's very imprecise but it sort of works *shrug*
             distance = np.sqrt(-np.log(distance))
             distance /= np.max(distance)
@@ -1237,6 +1242,61 @@ class DistanceToVCOL_OP(mesh_ops.MeshOperatorGenerator):
             c = np.ones((len(bm.verts), 4))
             c = (c.T * distance.T).T
             vcol.write_colors_bm("Distance", c, bm)
+
+        self.payload = _pl
+
+
+class ReactionDiffusionVCOL_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["iter"] = bpy.props.IntProperty(name="Iterations", min=0, default=1000)
+        self.props["dA"] = bpy.props.FloatProperty(name="dA", min=0.0, default=1.0)
+        self.props["dB"] = bpy.props.FloatProperty(name="dB", min=0.0, default=0.5)
+        self.props["feed"] = bpy.props.FloatProperty(name="Feed rate", min=0.0, default=0.055)
+        self.props["kill"] = bpy.props.FloatProperty(name="Kill rate", min=0.0, default=0.062)
+        self.props["time"] = bpy.props.FloatProperty(
+            name="Timestep", min=0.001, max=0.9, default=0.9
+        )
+
+        self.prefix = "reaction_diffusion_vcol"
+        self.info = "Reaction diffusion to vertex colors"
+        self.category = "Vertex data"
+
+        def _pl(self, bm, context):
+            selected = np.zeros(len(bm.verts))
+            for i, v in enumerate(bm.verts):
+                if v.select:
+                    selected[i] = 1.0
+
+            verts = afm.read_verts_bm(bm)
+            edges = afm.read_edges_bm(bm)
+
+            edge_a, edge_b = edges[:, 0], edges[:, 1]
+            tvlen = np.linalg.norm(verts[edge_b] - verts[edge_a], axis=1)
+            coeff = 1.0 / np.where(tvlen < 0.00001, 0.00001, tvlen)
+
+            def lap(p):
+                l = afm.mesh_data_laplacian_simple(p, edges)
+                return l
+
+            # A = np.random.random(size=len(bm.verts))
+            A = np.ones(shape=(len(bm.verts),))
+            # A = np.zeros(shape=(len(bm.verts),))
+            B = np.random.random(size=len(bm.verts))
+            # B = selected.copy()
+
+            t = self.time
+            for _ in range(self.iter):
+                nA = A + (self.dA * lap(A) - A * (B ** 2) + self.feed * (1.0 - A)) * t
+                nB = B + (self.dB * lap(B) + A * (B ** 2) - B * (self.kill + self.feed)) * t
+                A = nA
+                B = nB
+
+            res = B - A
+            res -= np.min(res)
+            res /= np.max(res)
+            c = np.ones((len(bm.verts), 4))
+            c = (c.T * res.T).T
+            vcol.write_colors_bm("Reaction Diffusion", c, bm)
 
         self.payload = _pl
 
