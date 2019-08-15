@@ -419,6 +419,34 @@ class CleanupThinFace_OP(mesh_ops.MeshOperatorGenerator):
         self.payload = _pl
 
 
+class DelaunayCriterion_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.prefix = "delaunay_criterion"
+        self.info = "Flip edges that don't meet the criterion"
+
+        self.category = "Cleanup"
+
+        def _pl(self, bm, context):
+            bm.edges.ensure_lookup_table()
+            bm.faces.ensure_lookup_table()
+
+            flips = 0
+            for e in bm.edges:
+                f = e.link_faces
+                if len(f) == 2 and len(f[0].verts) == 3 and len(f[1].verts) == 3:
+                    l0 = [i for i in f[0].loops if i.vert != e.verts[0] and i.vert != e.verts[1]][0]
+                    l1 = [i for i in f[1].loops if i.vert != e.verts[0] and i.vert != e.verts[1]][0]
+
+                    a0 = l0.calc_angle()
+                    a1 = l1.calc_angle()
+                    if a0 + a1 > np.pi:
+                        bmesh.utils.edge_rotate(e, True)
+                        flips += 1
+            print("flips:", flips)
+
+        self.payload = _pl
+
+
 class Cleanup_OP(mesh_ops.MeshOperatorGenerator):
     def generate(self):
         # self.props['trifaces'] = bpy.props.BoolProperty(name="Only trifaces", default=False)
@@ -1262,35 +1290,46 @@ class ReactionDiffusionVCOL_OP(mesh_ops.MeshOperatorGenerator):
         self.category = "Vertex data"
 
         def _pl(self, bm, context):
-            selected = np.zeros(len(bm.verts))
-            for i, v in enumerate(bm.verts):
-                if v.select:
-                    selected[i] = 1.0
+            # selected = np.zeros(len(bm.verts))
+            # for i, v in enumerate(bm.verts):
+            #     if v.select:
+            #         selected[i] = 1.0
 
-            verts = afm.read_verts_bm(bm)
+            curve = vcol.read_colors_bm("Curvature", bm)
+
+            # verts = afm.read_verts_bm(bm)
             edges = afm.read_edges_bm(bm)
 
             edge_a, edge_b = edges[:, 0], edges[:, 1]
-            tvlen = np.linalg.norm(verts[edge_b] - verts[edge_a], axis=1)
-            coeff = 1.0 / np.where(tvlen < 0.00001, 0.00001, tvlen)
+            # tvlen = np.linalg.norm(verts[edge_b] - verts[edge_a], axis=1)
+            # coeff = 1.0 / np.where(tvlen < 0.00001, 0.00001, tvlen)
+
+            data_sums = np.zeros(len(bm.verts), dtype=np.float)
+            totals = np.zeros(len(bm.verts), dtype=np.float)
+            edge_a, edge_b = edges[:, 0], edges[:, 1]
 
             def lap(p):
-                return afm.mesh_data_laplacian_simple(p, edges)
+                data_sums[:] = 0.0
+                totals[:] = 0.0
+                np.add.at(data_sums, edge_a, p[edge_b])
+                np.add.at(data_sums, edge_b, p[edge_a])
+                np.add.at(totals, edge_a, 1)
+                np.add.at(totals, edge_b, 1)
+                return data_sums / totals - p
 
-            # A = np.random.random(size=len(bm.verts))
-            A = np.ones(shape=(len(bm.verts),))
-            # A = np.zeros(shape=(len(bm.verts),))
+            A = np.random.random(size=len(bm.verts)) * (1.0 - curve)
             B = np.random.random(size=len(bm.verts))
-            # B = selected.copy()
 
             t = self.time
-            for _ in range(self.iter):
+            for i in range(self.iter):
+                if i % 10 == 0:
+                    print("iteration:", i)
                 nA = A + (self.dA * lap(A) - A * (B ** 2) + self.feed * (1.0 - A)) * t
                 nB = B + (self.dB * lap(B) + A * (B ** 2) - B * (self.kill + self.feed)) * t
                 A = nA
                 B = nB
 
-            res = B - A
+            res = B
             res -= np.min(res)
             res /= np.max(res)
             c = np.ones((len(bm.verts), 4))
