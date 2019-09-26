@@ -286,3 +286,31 @@ class SplitQuads_OP(mesh_ops.MeshOperatorGenerator):
                             bmesh.utils.face_split(f, v[1], v[3])
 
         self.payload = _pl
+
+
+class DelaunayCriterion_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.prefix = "delaunay_criterion"
+        self.info = "Flip edges that don't meet the criterion"
+
+        self.category = "Cleanup"
+
+        def _pl(self, bm, context):
+            bm.edges.ensure_lookup_table()
+            bm.faces.ensure_lookup_table()
+
+            flips = 0
+            for e in bm.edges:
+                f = e.link_faces
+                if len(f) == 2 and len(f[0].verts) == 3 and len(f[1].verts) == 3:
+                    l0 = [i for i in f[0].loops if i.vert != e.verts[0] and i.vert != e.verts[1]][0]
+                    l1 = [i for i in f[1].loops if i.vert != e.verts[0] and i.vert != e.verts[1]][0]
+
+                    a0 = l0.calc_angle()
+                    a1 = l1.calc_angle()
+                    if a0 + a1 > np.pi:
+                        bmesh.utils.edge_rotate(e, True)
+                        flips += 1
+            print("flips:", flips)
+
+        self.payload = _pl

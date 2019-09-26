@@ -21,7 +21,7 @@
 
 
 bl_info = {
-    "name": "Mesh Refine Toolbox",
+    "name": "Mesh Toolbox",
     "category": "Mesh",
     "description": "Various tools for mesh processing",
     "author": "ambi",
@@ -415,34 +415,6 @@ class CleanupThinFace_OP(mesh_ops.MeshOperatorGenerator):
 
                 bmesh.ops.collapse(bm, edges=cthese)
                 bmesh.ops.connect_verts_concave(bm, faces=bm.faces)
-
-        self.payload = _pl
-
-
-class DelaunayCriterion_OP(mesh_ops.MeshOperatorGenerator):
-    def generate(self):
-        self.prefix = "delaunay_criterion"
-        self.info = "Flip edges that don't meet the criterion"
-
-        self.category = "Cleanup"
-
-        def _pl(self, bm, context):
-            bm.edges.ensure_lookup_table()
-            bm.faces.ensure_lookup_table()
-
-            flips = 0
-            for e in bm.edges:
-                f = e.link_faces
-                if len(f) == 2 and len(f[0].verts) == 3 and len(f[1].verts) == 3:
-                    l0 = [i for i in f[0].loops if i.vert != e.verts[0] and i.vert != e.verts[1]][0]
-                    l1 = [i for i in f[1].loops if i.vert != e.verts[0] and i.vert != e.verts[1]][0]
-
-                    a0 = l0.calc_angle()
-                    a1 = l1.calc_angle()
-                    if a0 + a1 > np.pi:
-                        bmesh.utils.edge_rotate(e, True)
-                        flips += 1
-            print("flips:", flips)
 
         self.payload = _pl
 
@@ -1013,7 +985,7 @@ class SelectHidden_OP(mesh_ops.MeshOperatorGenerator):
         self.prefix = "select_hidden"
         self.info = "Select hidden"
 
-        self.category = "Vertex data"
+        self.category = "Selection"
 
         def _pl(self, bm, context):
             raycast.init_with_bm(bm)
@@ -1047,10 +1019,10 @@ class RandomToVCOL_OP(mesh_ops.MeshOperatorGenerator):
     def generate(self):
         self.props["blur"] = bpy.props.IntProperty(name="Blur", default=1, min=0, max=10)
 
-        self.prefix = "random_to_vcol"
+        self.prefix = "random"
         self.info = "Random to vertex colors"
         self.fastmesh = True
-        self.category = "Vertex data"
+        self.category = "Vertex color"
 
         def _pl(self, mesh, context):
             verts = afm.read_verts(mesh)
@@ -1074,9 +1046,9 @@ class CurvatureToVCOL_OP(mesh_ops.MeshOperatorGenerator):
         self.props["power"] = bpy.props.FloatProperty(name="Power", default=1.0, min=0.1, max=100.0)
         self.props["alt"] = bpy.props.BoolProperty(name="Alt", default=False)
 
-        self.prefix = "curvature_to_vcol"
+        self.prefix = "curvature"
         self.info = "Curvature to vertex colors"
-        self.category = "Vertex data"
+        self.category = "Vertex color"
         self.fastmesh = True
 
         def _pl(self, mesh, context):
@@ -1108,9 +1080,9 @@ class CComponentsToVCOL_OP(mesh_ops.MeshOperatorGenerator):
             name="Normalize", default=0.0, min=0.0, max=1.0
         )
 
-        self.prefix = "ccomp_to_vcol"
+        self.prefix = "ccomp"
         self.info = "Curvature components to vertex colors"
-        self.category = "Vertex data"
+        self.category = "Vertex color"
         self.fastmesh = True
 
         def _pl(self, mesh, context):
@@ -1150,9 +1122,9 @@ class ThicknessToVCOL_OP(mesh_ops.MeshOperatorGenerator):
             name="Offset", default=0.01, min=0.0, max=1.0
         )
 
-        self.prefix = "thickness_to_vcol"
+        self.prefix = "thickness"
         self.info = "Thickness to vertex colors"
-        self.category = "Vertex data"
+        self.category = "Vertex color"
         self.fastmesh = True
 
         def _pl(self, mesh, context):
@@ -1195,9 +1167,9 @@ class AmbientOcclusionToVCOL_OP(mesh_ops.MeshOperatorGenerator):
         )
         self.props["dist"] = bpy.props.FloatProperty(name="Distance", default=1.0, min=0.0)
 
-        self.prefix = "ao_to_vcol"
+        self.prefix = "ambient_occlusion"
         self.info = "Ambient occlusion to vertex colors"
-        self.category = "Vertex data"
+        self.category = "Vertex color"
         self.fastmesh = True
 
         def _pl(self, mesh, context):
@@ -1236,9 +1208,9 @@ class DistanceToVCOL_OP(mesh_ops.MeshOperatorGenerator):
     def generate(self):
         self.props["dist"] = bpy.props.FloatProperty(name="Distance", default=1.0, min=0.0)
 
-        self.prefix = "distance_to_vcol"
+        self.prefix = "geodesic_distance"
         self.info = "Distance to selected to vertex colors"
-        self.category = "Vertex data"
+        self.category = "Vertex color"
         # self.fastmesh = True
 
         def _pl(self, bm, context):
@@ -1285,9 +1257,9 @@ class ReactionDiffusionVCOL_OP(mesh_ops.MeshOperatorGenerator):
             name="Timestep", min=0.001, max=0.9, default=0.9
         )
 
-        self.prefix = "reaction_diffusion_vcol"
+        self.prefix = "reaction_diffusion"
         self.info = "Reaction diffusion to vertex colors"
-        self.category = "Vertex data"
+        self.category = "Vertex color"
 
         def _pl(self, bm, context):
             # selected = np.zeros(len(bm.verts))
@@ -1335,6 +1307,20 @@ class ReactionDiffusionVCOL_OP(mesh_ops.MeshOperatorGenerator):
             c = np.ones((len(bm.verts), 4))
             c = (c.T * res.T).T
             vcol.write_colors_bm("Reaction Diffusion", c, bm)
+
+        self.payload = _pl
+
+
+class FloorPlan_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["dist"] = bpy.props.FloatProperty(name="Distance", default=1.0, min=0.0)
+
+        self.prefix = "floor_plan"
+        self.info = "Floor Plan"
+        self.category = "Build"
+
+        def _pl(self, bm, context):
+            pass
 
         self.payload = _pl
 

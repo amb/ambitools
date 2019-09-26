@@ -29,7 +29,7 @@ importlib.reload(master_ops)
 
 def create(load_these):
     pbuild = master_ops.PanelBuilder(
-        "mesh_refine_toolbox", load_these, "OBUILD", "VIEW_3D", "UI", "Tools"
+        "mesh_toolbox", load_these, "OBUILD", "VIEW_3D", "UI", "Tools"
     )
     return pbuild.register_params, pbuild.unregister_params
 
