@@ -28,9 +28,7 @@ importlib.reload(master_ops)
 
 
 def create(load_these):
-    pbuild = master_ops.PanelBuilder(
-        "mesh_toolbox", load_these, "OBUILD", "VIEW_3D", "UI", "Tools"
-    )
+    pbuild = master_ops.PanelBuilder("mesh_toolbox", load_these, "OBUILD", "VIEW_3D", "UI", "Tools")
     return pbuild.register_params, pbuild.unregister_params
 
 
@@ -43,13 +41,6 @@ class MeshOperator(master_ops.MacroOperator):
         pass
 
     def execute(self, context):
-        # apply modifiers for the active object before mesh actions
-        for mod in context.active_object.modifiers:
-            try:
-                bpy.ops.object.modifier_apply(modifier=mod.name)
-            except RuntimeError as ex:
-                print(ex)
-
         # run mesh operation
         mesh = context.active_object.data
         self.payload(mesh, context)
@@ -62,9 +53,27 @@ class MeshOperatorGenerator(master_ops.OperatorGenerator):
     def __init__(self, master_name):
         self.init_begin(master_name)
         self.fastmesh = False
+        self.apply_modifiers = True
         self.generate()
         self.init_end()
         self.name = "OBJECT_OT_" + self.name
+
+        # apply mods
+        if self.apply_modifiers:
+
+            def _apply(ifunc):
+                def _f(this, mesh, context):
+                    # apply modifiers for the active object before mesh actions
+                    for mod in context.active_object.modifiers:
+                        try:
+                            bpy.ops.object.modifier_apply(modifier=mod.name)
+                        except RuntimeError as ex:
+                            print(ex)
+                    ifunc(this, mesh, context)
+
+                return _f
+
+            self.payload = _apply(self.payload)
 
         # wrap Bmesh
         if not self.fastmesh:

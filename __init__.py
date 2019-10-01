@@ -38,6 +38,7 @@ import numpy as np  # noqa:F401
 import bmesh  # noqa:F401
 from collections import OrderedDict  # noqa:F401
 import mathutils as mu  # noqa:F401
+import mathutils.bvhtree as bvht
 
 # import/reload all source files
 from .bpy_amb import utils as au
@@ -1313,7 +1314,9 @@ class ReactionDiffusionVCOL_OP(mesh_ops.MeshOperatorGenerator):
 
 class FloorPlan_OP(mesh_ops.MeshOperatorGenerator):
     def generate(self):
-        self.props["dist"] = bpy.props.FloatProperty(name="Distance", default=1.0, min=0.0)
+        self.props["wall_thickness"] = bpy.props.FloatProperty(
+            name="Wall thickness", default=0.01, min=0.0
+        )
 
         self.prefix = "floor_plan"
         self.info = "Floor Plan"
@@ -1321,6 +1324,162 @@ class FloorPlan_OP(mesh_ops.MeshOperatorGenerator):
 
         def _pl(self, bm, context):
             pass
+
+        self.payload = _pl
+
+
+class ExtendRetopoLoop_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["base_object"] = bpy.props.PointerProperty(name="Target", type=bpy.types.Object)
+        self.props["step"] = bpy.props.FloatProperty(name="Step", default=1.0, min=0.01)
+        self.props["repeat"] = bpy.props.IntProperty(name="Repeat", default=1, min=1, max=10)
+        self.props["align_normal"] = bpy.props.FloatProperty(
+            name="Align to normal", default=0.5, min=0.0, max=1.0
+        )
+        self.props["equalize_edges"] = bpy.props.FloatProperty(
+            name="Edge equalization", default=0.5, min=0.0, max=1.0
+        )
+        self.props["max_project"] = bpy.props.FloatProperty(
+            name="Projection distance", default=2.0, min=0.1, max=100.0
+        )
+        # self.props["face_direction"] = bpy.props.BoolProperty(name="Face direction", default=True)
+        self.props["project"] = bpy.props.BoolProperty(name="Project", default=True)
+
+        self.prefix = "extend_retopo_loop"
+        self.info = "Extend loop"
+        self.category = "Retopo"
+        self.apply_modifiers = False
+
+        def _pl(self, bm, context):
+            selected = 0
+            s_edges = set()
+            for e in bm.edges:
+                if e.select:
+                    selected += 1
+                    if not e.is_boundary:
+                        self.report({"INFO"}, "Selection not in boundary")
+                        return
+                    s_edges.add(e)
+            if selected == 0:
+                self.report({"INFO"}, "No edges selected")
+                return
+
+            for _ in range(self.repeat):
+                # confirm that only one loop exist, not multiple
+                fe = list(s_edges)[0]
+                fev = fe.verts[0]
+                traversed = set()
+                traversed.add(fe)
+
+                avg_len = 0.0
+                s_verts = []
+                s_faces = set()
+                s_vecs = []
+                while True:
+                    leading = next(i for i in fev.link_edges if not i.select)
+                    s_vecs.append(fev.co - leading.other_vert(fev).co)
+                    s_verts.append(fev)
+                    s_faces |= set(fe.link_faces)
+                    fe = [
+                        i for i in fev.link_edges if i in s_edges and i not in traversed and i != fe
+                    ]
+                    if len(fe) == 0:
+                        break
+                    fe = fe[0]
+                    traversed.add(fe)
+                    avg_len += fe.calc_length()
+                    fev = fe.other_vert(fev)
+
+                if len(traversed) != len(s_edges):
+                    self.report({"INFO"}, "Please select only one loop")
+                    print(len(traversed), len(s_edges))
+                    return
+
+                # average edge length
+                avg_len /= len(traversed)
+
+                # center point of loop
+                avg_pt = mu.Vector((0, 0, 0))
+                for v in s_verts:
+                    avg_pt += v.co
+                avg_pt /= len(s_verts)
+
+                # average edge direction
+                avg_vec = mu.Vector((0, 0, 0))
+                for e in s_vecs:
+                    avg_vec += e
+                avg_vec /= len(s_vecs)
+
+                # SVD for input data
+                # if not self.face_direction:
+                if False:
+                    # direction based on vert locations
+                    _, _, vh = np.linalg.svd(np.array([v.co - avg_pt for v in s_verts]))
+                    normal = mu.Vector(tuple(vh[2, :]))
+                else:
+                    # direction based on face normals
+                    _, _, vh = np.linalg.svd(np.array([f.normal for f in s_faces]))
+                    normal = mu.Vector(tuple(vh[2, :]))
+
+                if normal.dot(avg_vec) < 0.0:
+                    normal = -normal
+
+                # unselect all
+                for e in s_edges:
+                    e.select = False
+
+                # extrude and move
+                ret = bmesh.ops.extrude_edge_only(bm, edges=list(traversed))
+                new_verts = [i for i in ret["geom"] if type(i) == bmesh.types.BMVert]
+                new_edges = [i for i in ret["geom"] if type(i) == bmesh.types.BMEdge]
+                step = normal * avg_len * self.step
+                for v in new_verts:
+                    v.co += step
+                    v.select = True
+
+                    # move towards the normal plane of the loop verts
+                    v.co -= (
+                        mu.geometry.distance_point_to_plane(v.co, avg_pt + step, normal)
+                        * normal
+                        * self.align_normal
+                    )
+
+                for e in new_edges:
+                    e.select = True
+
+                    # try to equalize edge lens
+                    mid_pt = (e.verts[0].co + e.verts[1].co) / 2
+                    elen = e.calc_length()
+                    strength = self.equalize_edges
+                    target = (1.0 - strength) + (avg_len / elen) * strength
+                    e.verts[0].co = mid_pt + (e.verts[0].co - mid_pt) * target
+                    e.verts[1].co = mid_pt + (e.verts[1].co - mid_pt) * target
+
+                bmesh.ops.recalc_face_normals(
+                    bm, faces=[i for i in ret["geom"] if type(i) == bmesh.types.BMFace]
+                )
+
+                # wrap to surface
+                if self.project:
+                    bvh = bvht.BVHTree.FromObject(
+                        self.base_object, context.evaluated_depsgraph_get()
+                    )
+                    for v in new_verts:
+                        back = bvh.ray_cast(v.co, v.normal, avg_len * self.max_project)
+                        front = bvh.ray_cast(v.co, -v.normal, avg_len * self.max_project)
+                        bf = back[0] is not None
+                        ff = front[0] is not None
+                        rc = None
+                        if bf and not ff:
+                            rc = back
+                        if ff and not bf:
+                            rc = front
+                        if ff and bf:
+                            rc = front if front[3] < back[3] else back
+                        if rc is not None:
+                            v.co = rc[0]
+
+                s_edges = set(new_edges)
 
         self.payload = _pl
 
