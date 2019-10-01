@@ -26,7 +26,7 @@ bl_info = {
     "description": "Various tools for mesh processing",
     "author": "ambi",
     "location": "3D view > Tools",
-    "version": (1, 1, 14),
+    "version": (1, 1, 15),
     "blender": (2, 80, 0),
 }
 
@@ -1340,7 +1340,7 @@ class ExtendRetopoLoop_OP(mesh_ops.MeshOperatorGenerator):
             name="Edge equalization", default=0.5, min=0.0, max=1.0
         )
         self.props["max_project"] = bpy.props.FloatProperty(
-            name="Projection distance", default=2.0, min=0.1, max=100.0
+            name="Projection distance", default=1.0, min=0.1, max=100.0
         )
         # self.props["face_direction"] = bpy.props.BoolProperty(name="Face direction", default=True)
         self.props["project"] = bpy.props.BoolProperty(name="Project", default=True)
@@ -1363,6 +1363,10 @@ class ExtendRetopoLoop_OP(mesh_ops.MeshOperatorGenerator):
             if selected == 0:
                 self.report({"INFO"}, "No edges selected")
                 return
+
+            bvh = bvht.BVHTree.FromObject(
+                self.base_object, context.evaluated_depsgraph_get()
+            )
 
             for _ in range(self.repeat):
                 # confirm that only one loop exist, not multiple
@@ -1455,15 +1459,20 @@ class ExtendRetopoLoop_OP(mesh_ops.MeshOperatorGenerator):
                     e.verts[0].co = mid_pt + (e.verts[0].co - mid_pt) * target
                     e.verts[1].co = mid_pt + (e.verts[1].co - mid_pt) * target
 
+                    # TODO: instead of this ^, move verts to equal edge lengths along line
+                    #       maybe slide vert along edge
+                    #       maybe hermite curves
+                    #       maybe it's maybelline
+                    #       or... numpy.polyfit on 1D point match on a spline curve
+                    #       or... just average points on the curve starting from match
+                    #       mu.geometry.interpolate_bezier
+
                 bmesh.ops.recalc_face_normals(
                     bm, faces=[i for i in ret["geom"] if type(i) == bmesh.types.BMFace]
                 )
 
                 # wrap to surface
                 if self.project:
-                    bvh = bvht.BVHTree.FromObject(
-                        self.base_object, context.evaluated_depsgraph_get()
-                    )
                     for v in new_verts:
                         back = bvh.ray_cast(v.co, v.normal, avg_len * self.max_project)
                         front = bvh.ray_cast(v.co, -v.normal, avg_len * self.max_project)
