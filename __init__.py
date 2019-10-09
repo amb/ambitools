@@ -1320,7 +1320,7 @@ class FloorPlan_OP(mesh_ops.MeshOperatorGenerator):
 
         self.prefix = "floor_plan"
         self.info = "Floor Plan"
-        self.category = "Build"
+        self.category = "General"
 
         def _pl(self, bm, context):
             pass
