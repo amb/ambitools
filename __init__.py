@@ -1320,7 +1320,7 @@ class FloorPlan_OP(mesh_ops.MeshOperatorGenerator):
 
         self.prefix = "floor_plan"
         self.info = "Floor Plan"
-        self.category = "General"
+        self.category = "Build"
 
         def _pl(self, bm, context):
             pass
@@ -1347,7 +1347,7 @@ class ExtendRetopoLoop_OP(mesh_ops.MeshOperatorGenerator):
 
         self.prefix = "extend_retopo_loop"
         self.info = "Extend loop"
-        self.category = "Retopo"
+        self.category = "Build"
         self.apply_modifiers = False
 
         def _pl(self, bm, context):
