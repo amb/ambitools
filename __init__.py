@@ -50,6 +50,7 @@ au.keep_updated(
     [
         ".bpy_amb/fastmesh@afm",
         ".bpy_amb/bbmesh@abm",
+        ".bpy_amb/utils",
         ".bpy_amb/raycast",
         ".bpy_amb/vcol",
         "mesh_ops",
@@ -1257,16 +1258,10 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
         self.props["break_fill"] = bpy.props.BoolProperty(name="Break on fill", default=True)
         self.props["from_selected"] = bpy.props.BoolProperty(name="From selected", default=False)
 
-        def cotan(a, b):
-            # va, vb = a, b
-            # t = va.x * vb.z - va.z * vb.x
-            # return 0.0 if t == 0.0 else (va.x * vb.x + va.z * vb.z) / t
-            t = (a.cross(b)).length
-            return 0.0 if t == 0.0 else (a.dot(b)) / t
-
         def _pl(self, bm, context):
             distance = np.zeros(len(bm.verts), dtype=np.float64)
             s_verts = set()
+            # TODO: this is dumb btw
             e_test = lambda x: x.is_boundary
             if self.from_selected:
                 e_test = lambda x: x.select or x.is_boundary
@@ -1277,76 +1272,52 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
                     s_verts.add(v)
                     assert i == v.index
 
+            # check for tri mesh
             for f in bm.faces:
-                assert len(f.edges) == 3
+                if len(f.edges) != 3:
+                    self.report({"INFO"}, "Works only on triangle meshes.")
+                    return {"CANCELLED"}
 
-            # 1-ring of each vert
-            rad_v = {}
-            rad_e = {}
-            for v in s_verts:
-                re = abm.radial_edges(v)
-                rad_e[v] = re
-                rad_v[v] = [e.other_vert(v) for e in re]
-
-            # cotan weights
-            cot_eps = 1e-6
-            cot_max = np.cos(cot_eps) / np.sin(cot_eps)
-            print("cot_max:", cot_max)
-            v_wg = {}
-            v_area = {}
-            min_area = 1.0e10
-            for v in s_verts:
-                wgs = []
-                rv_v = rad_v[v]
-                v_area[v] = sum(f.calc_area() for f in v.link_faces)
-                if v_area[v] < min_area:
-                    min_area = v_area[v]
-                for ri, rv in enumerate(rad_v[v]):
-                    pv = rv_v[(ri - 1) % len(rv_v)]
-                    nv = rv_v[(ri + 1) % len(rv_v)]
-                    cv = rv_v[ri]
-                    v0 = cv.co - v.co
-                    vb = pv.co - v.co
-                    va = nv.co - v.co
-                    cot_a = cotan(v0 - va, -va)
-                    cot_b = cotan(v0 - vb, -vb)
-                    wg = cot_a + cot_b
-                    if wg > cot_max:
-                        wg = cot_max
-                    if wg < -cot_max:
-                        wg = -cot_max
-                    wgs.append(wg)
-                v_wg[v] = wgs
+            v_wg, v_area, min_area, rad_v = abm.cotan_weights(bm, s_verts)
 
             # smooth
+            sv_idx = np.array([v.index for v in s_verts])
+            sv_area = [v_area[v] for v in s_verts]
+            sv_speed = np.array([min_area / sv_area[i] for i in range(len(s_verts))])
+
+            # edge weighted data flow
+            flow = []
+            flow_wg = []
+            for v in s_verts:
+                a = v.index
+                v_rad = rad_v[v]
+                for wi, w in enumerate(v_wg[v]):
+                    flow.append((a, v_rad[wi].index))
+                    flow_wg.append(w)
+            n_flow = np.array(flow)
+            n_flow_wg = np.array(flow_wg, dtype=np.float32)
+
+            # diffuse data
+            n_res = np.zeros(distance.shape, dtype=np.float32)
             for ic in range(self.iter):
-                changes = {}
-                for sv in s_verts:
-                    tot = 0.0
-                    totw = 0.0
-                    for wi, w in enumerate(v_wg[sv]):
-                        tot += w * distance[rad_v[sv][wi].index]
-                        totw += w
-                    speed = min_area / v_area[sv] 
-                    r = (tot / totw) * speed + distance[sv.index] * (1.0 - speed)
-                    assert totw > 0.0
-                    if not np.isnan(r):
-                        changes[sv.index] = r
-
-                for k in changes.keys():
-                    distance[k] = changes[k]
-
+                n_res *= 0.0
+                np.add.at(n_res, n_flow[:, 0], n_flow_wg * distance[n_flow[:, 1]])
+                distance[sv_idx] = n_res[sv_idx] * sv_speed + distance[sv_idx] * (1.0 - sv_speed)
                 if self.break_fill and np.min(distance) > 0.01:
                     print("Broke iteration at {}, no more empties.".format(ic))
                     break
 
-            if np.min(distance) <= 0.0:
-                self.report({"INFO"}, "Invalid cotangent value. Increase iterations.")
+            dmin = np.min(distance)
+            if dmin <= 0.0:
+                distance -= dmin - 1.0e6
+                self.report(
+                    {"INFO"}, "Invalid cotangent value. Increase iterations and/or fix the mesh."
+                )
             distance /= np.max(distance)
             distance = np.sqrt(-np.log(distance))
             distance /= np.max(distance)
 
-            print(np.max(distance), np.min(distance))
+            print("{}, {}".format(np.max(distance), np.min(distance)))
 
             c = np.ones((len(bm.verts), 4))
             c = (c.T * distance.T).T
