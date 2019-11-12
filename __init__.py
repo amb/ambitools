@@ -26,7 +26,7 @@ bl_info = {
     "description": "Various tools for mesh processing",
     "author": "ambi",
     "location": "3D view > Tools",
-    "version": (1, 1, 15),
+    "version": (1, 1, 16),
     "blender": (2, 80, 0),
 }
 
@@ -1206,51 +1206,51 @@ class AmbientOcclusionToVCOL_OP(mesh_ops.MeshOperatorGenerator):
         self.payload = _pl
 
 
-class DistanceToVCOL_OP(mesh_ops.MeshOperatorGenerator):
-    def generate(self):
-        self.props["dist"] = bpy.props.FloatProperty(name="Distance", default=1.0, min=0.0)
+# class DistanceToVCOL_OP(mesh_ops.MeshOperatorGenerator):
+#     def generate(self):
+#         self.props["dist"] = bpy.props.FloatProperty(name="Distance", default=1.0, min=0.0)
 
-        self.prefix = "geodesic_distance"
-        self.info = "Distance to selected to vertex colors"
-        self.category = "Vertex color"
-        # self.fastmesh = True
+#         self.prefix = "geodesic_distance"
+#         self.info = "Distance to selected to vertex colors"
+#         self.category = "Vertex color"
+#         # self.fastmesh = True
 
-        def _pl(self, bm, context):
-            distance = np.zeros(len(bm.verts), dtype=np.float64)
-            for i, v in enumerate(bm.verts):
-                if v.select:
-                    distance[i] = 1.0
+#         def _pl(self, bm, context):
+#             distance = np.zeros(len(bm.verts), dtype=np.float64)
+#             for i, v in enumerate(bm.verts):
+#                 if v.select:
+#                     distance[i] = 1.0
 
-            verts = afm.read_verts_bm(bm)
-            edges = afm.read_edges_bm(bm)
+#             verts = afm.read_verts_bm(bm)
+#             edges = afm.read_edges_bm(bm)
 
-            N = 100
-            # protect = distance.copy()
-            while True:
-                distance = afm.mesh_smooth_filter_variable_limit(distance, verts, edges, N, 0.5)
-                if True:  # np.min(distance) > 0.0:
-                    break
+#             N = 100
+#             # protect = distance.copy()
+#             while True:
+#                 distance = afm.mesh_smooth_filter_variable_limit(distance, verts, edges, N, 0.5)
+#                 if True:  # np.min(distance) > 0.0:
+#                     break
 
-            # distance -= np.min(distance)
-            # distance += 0.0000000000000001
-            # distance /= np.max(distance)
+#             # distance -= np.min(distance)
+#             # distance += 0.0000000000000001
+#             # distance /= np.max(distance)
 
-            # varadhan, from keenan crane heat method
-            # TODO: vector fiels, solve Poisson
-            # yes, it's very imprecise but it sort of works *shrug*
-            distance = np.sqrt(-np.log(distance))
-            distance /= np.max(distance)
+#             # varadhan, from keenan crane heat method
+#             # TODO: vector fiels, solve Poisson
+#             # yes, it's very imprecise but it sort of works *shrug*
+#             distance = np.sqrt(-np.log(distance))
+#             distance /= np.max(distance)
 
-            c = np.ones((len(bm.verts), 4))
-            c = (c.T * distance.T).T
-            vcol.write_colors_bm("Distance", c, bm)
+#             c = np.ones((len(bm.verts), 4))
+#             c = (c.T * distance.T).T
+#             vcol.write_colors_bm("Distance", c, bm)
 
-        self.payload = _pl
+#         self.payload = _pl
 
 
 class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
     def generate(self):
-        self.prefix = "gd2"
+        self.prefix = "geodesic_distance"
         self.info = "Distance to selected to vertex colors v2"
         self.category = "Vertex color"
 
@@ -1282,8 +1282,7 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
 
             # smooth
             sv_idx = np.array([v.index for v in s_verts])
-            sv_area = [v_area[v] for v in s_verts]
-            sv_speed = np.array([min_area / sv_area[i] for i in range(len(s_verts))])
+            sv_speed = np.array([min_area / v_area[v] for v in s_verts])
 
             # edge weighted data flow
             flow = []
@@ -1314,6 +1313,8 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
                     {"INFO"}, "Invalid cotangent value. Increase iterations and/or fix the mesh."
                 )
             distance /= np.max(distance)
+            
+            # varadhan
             distance = np.sqrt(-np.log(distance))
             distance /= np.max(distance)
 

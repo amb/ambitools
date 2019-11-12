@@ -28,7 +28,19 @@ importlib.reload(master_ops)
 
 
 def create(load_these):
-    pbuild = master_ops.PanelBuilder("mesh_toolbox", load_these, "OBUILD", "VIEW_3D", "UI", "Edit")
+    # self,
+    # master_name,
+    # input_ops,
+    # p_panel_draw,
+    # p_panel_props,
+    # p_idname,
+    # p_spacetype,
+    # p_regiontype,
+    # p_category,
+    # additional_classes,
+    pbuild = master_ops.PanelBuilder(
+        "mesh_toolbox", load_these, {}, {}, "OBUILD", "VIEW_3D", "UI", "Edit", []
+    )
     return pbuild.register_params, pbuild.unregister_params
 
 
