@@ -26,7 +26,7 @@ bl_info = {
     "description": "Various tools for mesh processing",
     "author": "ambi",
     "location": "3D view > Tools",
-    "version": (1, 1, 15),
+    "version": (1, 1, 16),
     "blender": (2, 80, 0),
 }
 
@@ -222,6 +222,38 @@ class SurfaceSmooth_OP(mesh_ops.MeshOperatorGenerator):
                     new_loc /= len(projected)
 
                     v.co = new_loc
+
+        self.payload = _pl
+
+
+class AntiSmooth_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["iter"] = bpy.props.IntProperty(name="Iterations", default=2, min=1, max=10)
+        self.props["amount"] = bpy.props.FloatProperty(name="Amount", default=1.0)
+
+        self.prefix = "anti_smooth"
+        self.info = "Smooth in the other direction"
+
+        self.category = "Filter"
+
+        def _pl(self, bm, context):
+            locs = []
+            for i, v in enumerate(bm.verts):
+                assert i == v.index
+                locs.append(v.co)
+
+            for _ in range(self.iter):
+                for i, v in enumerate(bm.verts):
+                    ring1 = abm.vert_vert(v)
+                    nudge = mu.Vector([0.0, 0.0, 0.0])
+                    for rv in ring1:
+                        nudge += locs[rv.index]
+                    nudge += locs[i]
+                    nudge /= len(ring1) + 1
+                    locs[i] = nudge
+
+            for i, v in enumerate(bm.verts):
+                v.co += (v.co - locs[i]) * self.amount
 
         self.payload = _pl
 
@@ -1282,8 +1314,7 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
 
             # smooth
             sv_idx = np.array([v.index for v in s_verts])
-            sv_area = [v_area[v] for v in s_verts]
-            sv_speed = np.array([min_area / sv_area[i] for i in range(len(s_verts))])
+            sv_speed = np.array([min_area / v_area[v] for v in s_verts])
 
             # edge weighted data flow
             flow = []
@@ -1314,6 +1345,8 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
                     {"INFO"}, "Invalid cotangent value. Increase iterations and/or fix the mesh."
                 )
             distance /= np.max(distance)
+
+            # varadhan
             distance = np.sqrt(-np.log(distance))
             distance /= np.max(distance)
 
