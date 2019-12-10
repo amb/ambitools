@@ -1,3 +1,114 @@
+
+
+class CurveSubd_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.prefix = "curve_subd"
+        self.info = "Subdivide according to curvature maintaining the position of original points"
+
+        self.category = "Refine"
+
+        def _pl(self, bm, context):
+            orig_verts = [v.index for v in bm.verts]
+
+            a, b, geo = bmesh.ops.subdivide_edges(
+                # quad_corner_type = ('STRAIGHT_CUT', 'INNER_VERT', 'PATH', 'FAN')
+                bm,
+                edges=bm.edges,
+                smooth=0.5,
+                cuts=1,
+                use_grid_fill=True,
+                use_only_quads=True,
+            )
+
+            for v in bm.verts:
+                v.select = False
+
+            # make ngons into quads
+            for f in bm.faces:
+                if len(f.verts) > 4:
+                    verts = []
+                    for v in f.verts:
+                        if v.index not in orig_verts:
+                            verts.append(v)
+
+                    # new_loc = mu.Vector([0, 0, 0])
+                    # for i in range(len(verts)):
+                    #     new_loc += verts[i].co
+                    # new_loc /= len(verts)
+
+                    # bmesh.ops.delete(bm, geom=[f], context="FACES_ONLY")
+
+                    r = bmesh.ops.poke(bm, faces=[f], center_mode="MEAN")
+                    # , offset=0.0, use_relative_offset=True)
+
+                    dis = set()
+                    for nf in r["faces"]:
+                        for e in nf.edges:
+                            if e.verts[0] not in verts and e.verts[1] not in verts:
+                                dis.add(e)
+
+                    bmesh.ops.dissolve_edges(bm, edges=list(dis))
+
+                    # bmesh.ops.connect_verts(bm, verts=verts)
+                    # bmesh.ops.triangulate(bm, faces=[f], ngon_method="BEAUTY")
+                    # bmesh.ops.unsubdivide(bm, verts=verts, iterations=2)
+
+            # for f in bm.faces:
+            #     if len(f.verts) > 4:
+            #         for v in f.verts:
+            #             if v.index not in orig_verts:
+            #                 v.select = True
+            #             else:
+            #                 v.select = False
+            #     else:
+            #         for v in f.verts:
+            #             v.select = False
+
+        self.payload = _pl
+
+
+class DistanceToVCOL_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["dist"] = bpy.props.FloatProperty(name="Distance", default=1.0, min=0.0)
+
+        self.prefix = "geodesic_distance"
+        self.info = "Distance to selected to vertex colors"
+        self.category = "Vertex color"
+        # self.fastmesh = True
+
+        def _pl(self, bm, context):
+            distance = np.zeros(len(bm.verts), dtype=np.float64)
+            for i, v in enumerate(bm.verts):
+                if v.select:
+                    distance[i] = 1.0
+
+            verts = afm.read_verts_bm(bm)
+            edges = afm.read_edges_bm(bm)
+
+            N = 100
+            # protect = distance.copy()
+            while True:
+                distance = afm.mesh_smooth_filter_variable_limit(distance, verts, edges, N, 0.5)
+                if True:  # np.min(distance) > 0.0:
+                    break
+
+            # distance -= np.min(distance)
+            # distance += 0.0000000000000001
+            # distance /= np.max(distance)
+
+            # varadhan, from keenan crane heat method
+            # TODO: vector fiels, solve Poisson
+            # yes, it's very imprecise but it sort of works *shrug*
+            distance = np.sqrt(-np.log(distance))
+            distance /= np.max(distance)
+
+            c = np.ones((len(bm.verts), 4))
+            c = (c.T * distance.T).T
+            vcol.write_colors_bm("Distance", c, bm)
+
+        self.payload = _pl
+
+
 class EdgeSmooth_OP(mesh_ops.MeshOperatorGenerator):
     def generate(self):
         self.props["border"] = bpy.props.BoolProperty(name="Exclude border", default=True)
@@ -314,3 +425,4 @@ class DelaunayCriterion_OP(mesh_ops.MeshOperatorGenerator):
             print("flips:", flips)
 
         self.payload = _pl
+

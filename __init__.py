@@ -23,11 +23,15 @@
 bl_info = {
     "name": "Mesh Toolbox",
     "category": "Mesh",
-    "description": "Various tools for mesh processing",
+    "description": "Various tools for mesh processing. Highly experimental."
+    " 99% completely broken.",
     "author": "ambi",
-    "location": "3D view > Tools",
+    "location": "3D view > Tools > Edit > Mesh toolbox",
     "version": (1, 1, 16),
     "blender": (2, 80, 0),
+    "support": "TESTING",
+    "tracker_url": "https://github.com/amb/ambitools/issues",
+    "warning": "EXPERIMENTAL",
 }
 
 
@@ -50,12 +54,13 @@ au.keep_updated(
     [
         ".bpy_amb/fastmesh@afm",
         ".bpy_amb/bbmesh@abm",
+        ".bpy_amb/math@amath",
         ".bpy_amb/utils",
         ".bpy_amb/raycast",
         ".bpy_amb/vcol",
         "mesh_ops",
     ],
-    verbose=True,
+    verbose=False,
 )
 
 
@@ -219,9 +224,10 @@ class SurfaceSmooth_OP(mesh_ops.MeshOperatorGenerator):
                     new_loc = mu.Vector([0.0, 0.0, 0.0])
                     for p in projected:
                         new_loc += p
-                    new_loc /= len(projected)
 
-                    v.co = new_loc
+                    if len(projected) > 0:
+                        new_loc /= len(projected)
+                        v.co = new_loc
 
         self.payload = _pl
 
@@ -254,6 +260,141 @@ class AntiSmooth_OP(mesh_ops.MeshOperatorGenerator):
 
             for i, v in enumerate(bm.verts):
                 v.co += (v.co - locs[i]) * self.amount
+
+        self.payload = _pl
+
+
+class Planarize_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["min_polys"] = bpy.props.IntProperty(name="Min polys", default=5, min=1)
+        self.props["smooths"] = bpy.props.IntProperty(name="Smooths", default=1, min=0)
+        self.props["threshold"] = bpy.props.FloatProperty(name="Split thredhold", default=0.01)
+
+        self.prefix = "planarize"
+        self.info = "Split into smooth planes"
+
+        self.category = "Islands"
+
+        def _pl(self, bm, context):
+            fverts = afm.read_verts_bm(bm)
+            fedges = afm.read_edges_bm(bm)
+            # fnorms = afm.read_norms_bm(bm)
+
+            # curve = afm.calc_curvature(fverts, fedges, fnorms)
+
+            points = []
+            for i, f in enumerate(bm.faces):
+                x, y, z = f.normal
+                A = np.arctan2(z, np.sqrt(x ** 2 + y ** 2))
+                B = np.arctan2(x, y)
+                points.append([A, B, *f.calc_center_median()])
+                # points.append([A, B])
+
+                # tot_vec = np.zeros((1,), dtype=np.float)
+                # for v in f.verts:
+                #     tot_vec += curve[v.index]
+                # tot_vec /= len(f.verts)
+                # points.append([*tot_vec])
+
+            points = np.array(points)
+
+            # data, charts, steps
+            centers, picks = amath.kmeans_pp(points, 3, 20, pp=False)
+
+            # do a voronoi (the z-buffer like implementation
+            # not the algorithm) style group smoothing
+            # each kmeans group is its own voronoi cell
+            # smooth the cells
+            # then test which has the highest priority
+            # after which fill the gaps
+            totals = np.ones(len(bm.verts)) * 0.5
+            result = np.ones(len(bm.faces), dtype=np.int32) * -1
+            for i in range(len(centers)):
+                group = np.argwhere(picks == i)[::, 0]
+
+                values = np.zeros((len(bm.verts),))
+                for g in group:
+                    for v in bm.faces[g].verts:
+                        values[v.index] += 0.25
+
+                res = afm.mesh_smooth_filter_variable(values, fverts, fedges, self.smooths)
+                over = res > totals
+                totals[over] = res[over]
+
+                # mark faces
+                for f in bm.faces:
+                    count = 0
+                    for v in f.verts:
+                        if over[v.index]:
+                            count += 1
+                    if count == len(f.verts):
+                        result[f.index] = i
+
+            # fill undefined faces data with neighbouring values
+            while True:
+                empties = np.argwhere(result == -1)[::, 0]
+                if len(empties) == 0:
+                    break
+                for n in empties:
+                    f = bm.faces[n]
+                    for e in f.edges:
+                        # TODO: get the highest edge count group selection
+                        lf = e.link_faces
+                        if len(lf) == 2:
+                            f2 = lf[0] if lf[0] != f else lf[1]
+                            if result[f2.index] >= 0 and result[f2.index] >= 0:
+                                result[n] = result[f2.index]
+                                break
+
+            # ensure no undefined data
+            assert len(result[result == -1]) == 0
+
+            # result = picks
+
+            # marks edges according to groups
+            # for e in bm.edges:
+            #     e.select = False
+
+            # for e in bm.edges:
+            #     f = e.link_faces
+            #     if len(f) == 2 and picks[f[0].index] != picks[f[1].index]:
+            #         e.select = True
+
+            # write groups out as random vcols
+            uq = np.lib.arraysetops.unique(result)
+            colors = np.random.random((max(uq) + 1, 4))
+            colors[..., 3] = 1.0
+            vcol.write_face_colors_bm("test", colors[result], bm)
+
+        self.payload = _pl
+
+
+class CurvatureFlood_OP(mesh_ops.MeshOperatorGenerator):
+    def generate(self):
+        self.props["smooths"] = bpy.props.IntProperty(name="Smooths", default=1, min=0)
+        self.props["threshold"] = bpy.props.FloatProperty(name="Split thredhold", default=0.01)
+
+        self.prefix = "curvature_flood"
+        self.info = "Flood fill from curvature sinks"
+
+        self.category = "Islands"
+
+        def _pl(self, bm, context):
+            fverts = afm.read_verts_bm(bm)
+            fedges = afm.read_edges_bm(bm)
+            fnorms = afm.read_norms_bm(bm)
+            curve = afm.calc_curvature(fverts, fedges, fnorms)
+
+            points = np.array(points)
+
+            # data, charts, steps
+            centers, picks = amath.kmeans_pp(points, 3, 20, pp=False)
+
+            # write groups out as random vcols
+            uq = np.lib.arraysetops.unique(result)
+            colors = np.random.random((max(uq) + 1, 4))
+            colors[..., 3] = 1.0
+            vcol.write_face_colors_bm("test", colors[result], bm)
 
         self.payload = _pl
 
@@ -777,6 +918,7 @@ class FuseManifold_OP(mesh_ops.MeshOperatorGenerator):
         self.category = "Refine"
 
         def _pl(self, bm, context):
+            self.report({"INFO"}, "To be done")
             pass
             # selected_faces = []
             # for f in bm.faces:
@@ -797,73 +939,6 @@ class FuseManifold_OP(mesh_ops.MeshOperatorGenerator):
             #     bmesh.ops.delete(bm, geom=selected_faces, context="FACES")
 
         self.payload = _pl
-
-
-# class CurveSubd_OP(mesh_ops.MeshOperatorGenerator):
-#     def generate(self):
-#         self.prefix = "curve_subd"
-#         self.info = "Subdivide according to curvature maintaining the position of original points"
-
-#         self.category = "Refine"
-
-#         def _pl(self, bm, context):
-#             orig_verts = [v.index for v in bm.verts]
-
-#             a, b, geo = bmesh.ops.subdivide_edges(
-#                 # quad_corner_type = ('STRAIGHT_CUT', 'INNER_VERT', 'PATH', 'FAN')
-#                 bm,
-#                 edges=bm.edges,
-#                 smooth=0.5,
-#                 cuts=1,
-#                 use_grid_fill=True,
-#                 use_only_quads=True,
-#             )
-
-#             for v in bm.verts:
-#                 v.select = False
-
-#             # make ngons into quads
-#             for f in bm.faces:
-#                 if len(f.verts) > 4:
-#                     verts = []
-#                     for v in f.verts:
-#                         if v.index not in orig_verts:
-#                             verts.append(v)
-
-#                     # new_loc = mu.Vector([0, 0, 0])
-#                     # for i in range(len(verts)):
-#                     #     new_loc += verts[i].co
-#                     # new_loc /= len(verts)
-
-#                     # bmesh.ops.delete(bm, geom=[f], context="FACES_ONLY")
-
-#                     r = bmesh.ops.poke(bm, faces=[f], center_mode="MEAN")
-#                     # , offset=0.0, use_relative_offset=True)
-
-#                     dis = set()
-#                     for nf in r["faces"]:
-#                         for e in nf.edges:
-#                             if e.verts[0] not in verts and e.verts[1] not in verts:
-#                                 dis.add(e)
-
-#                     bmesh.ops.dissolve_edges(bm, edges=list(dis))
-
-#                     # bmesh.ops.connect_verts(bm, verts=verts)
-#                     # bmesh.ops.triangulate(bm, faces=[f], ngon_method="BEAUTY")
-#                     # bmesh.ops.unsubdivide(bm, verts=verts, iterations=2)
-
-#             # for f in bm.faces:
-#             #     if len(f.verts) > 4:
-#             #         for v in f.verts:
-#             #             if v.index not in orig_verts:
-#             #                 v.select = True
-#             #             else:
-#             #                 v.select = False
-#             #     else:
-#             #         for v in f.verts:
-#             #             v.select = False
-
-#         self.payload = _pl
 
 
 class CurveDecimate_OP(mesh_ops.MeshOperatorGenerator):
@@ -1238,48 +1313,6 @@ class AmbientOcclusionToVCOL_OP(mesh_ops.MeshOperatorGenerator):
         self.payload = _pl
 
 
-# class DistanceToVCOL_OP(mesh_ops.MeshOperatorGenerator):
-#     def generate(self):
-#         self.props["dist"] = bpy.props.FloatProperty(name="Distance", default=1.0, min=0.0)
-
-#         self.prefix = "geodesic_distance"
-#         self.info = "Distance to selected to vertex colors"
-#         self.category = "Vertex color"
-#         # self.fastmesh = True
-
-#         def _pl(self, bm, context):
-#             distance = np.zeros(len(bm.verts), dtype=np.float64)
-#             for i, v in enumerate(bm.verts):
-#                 if v.select:
-#                     distance[i] = 1.0
-
-#             verts = afm.read_verts_bm(bm)
-#             edges = afm.read_edges_bm(bm)
-
-#             N = 100
-#             # protect = distance.copy()
-#             while True:
-#                 distance = afm.mesh_smooth_filter_variable_limit(distance, verts, edges, N, 0.5)
-#                 if True:  # np.min(distance) > 0.0:
-#                     break
-
-#             # distance -= np.min(distance)
-#             # distance += 0.0000000000000001
-#             # distance /= np.max(distance)
-
-#             # varadhan, from keenan crane heat method
-#             # TODO: vector fiels, solve Poisson
-#             # yes, it's very imprecise but it sort of works *shrug*
-#             distance = np.sqrt(-np.log(distance))
-#             distance /= np.max(distance)
-
-#             c = np.ones((len(bm.verts), 4))
-#             c = (c.T * distance.T).T
-#             vcol.write_colors_bm("Distance", c, bm)
-
-#         self.payload = _pl
-
-
 class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
     def generate(self):
         self.prefix = "geodesic_distance"
@@ -1287,15 +1320,29 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
         self.category = "Vertex color"
 
         self.props["iter"] = bpy.props.IntProperty(name="Iterations", default=20, min=1)
+        self.props["speed_multi"] = bpy.props.FloatProperty(
+            name="Speed multiplier", default=1.0, min=1.0
+        )
+        self.props["where_from"] = bpy.props.EnumProperty(
+            items=[
+                ("CORNER", "Corner", "", "", 0),
+                ("SELECTED", "Selected", "", "", 1),
+                ("BOTH", "Both", "", "", 2),
+            ],
+            name="Type",
+            default="BOTH",
+        )
         self.props["break_fill"] = bpy.props.BoolProperty(name="Break on fill", default=True)
-        self.props["from_selected"] = bpy.props.BoolProperty(name="From selected", default=False)
 
         def _pl(self, bm, context):
             distance = np.zeros(len(bm.verts), dtype=np.float64)
             s_verts = set()
-            # TODO: this is dumb btw
-            e_test = lambda x: x.is_boundary
-            if self.from_selected:
+
+            if self.where_from == "CORNER":
+                e_test = lambda x: x.is_boundary
+            if self.where_from == "SELECTED":
+                e_test = lambda x: x.select
+            elif self.where_from == "BOTH":
                 e_test = lambda x: x.select or x.is_boundary
             for i, v in enumerate(bm.verts):
                 if e_test(v):
@@ -1305,16 +1352,21 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
                     assert i == v.index
 
             # check for tri mesh
-            for f in bm.faces:
-                if len(f.edges) != 3:
-                    self.report({"INFO"}, "Works only on triangle meshes.")
-                    return {"CANCELLED"}
+            # for f in bm.faces:
+            #     if len(f.edges) != 3:
+            #         self.report({"INFO"}, "Works only on triangle meshes.")
+            #         return {"CANCELLED"}
 
             v_wg, v_area, min_area, rad_v = abm.cotan_weights(bm, s_verts)
 
             # smooth
             sv_idx = np.array([v.index for v in s_verts])
             sv_speed = np.array([min_area / v_area[v] for v in s_verts])
+            sv_speed *= self.speed_multi
+            clamp_1 = sv_speed > 1.0
+            if np.any(clamp_1):
+                print("geodesic: invalid geo encountered")
+                sv_speed[clamp_1] = 1.0
 
             # edge weighted data flow
             flow = []
@@ -1334,7 +1386,7 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
                 n_res *= 0.0
                 np.add.at(n_res, n_flow[:, 0], n_flow_wg * distance[n_flow[:, 1]])
                 distance[sv_idx] = n_res[sv_idx] * sv_speed + distance[sv_idx] * (1.0 - sv_speed)
-                if self.break_fill and np.min(distance) > 0.01:
+                if self.break_fill and np.min(distance) > 1.0e-5:
                     print("Broke iteration at {}, no more empties.".format(ic))
                     break
 
@@ -1345,7 +1397,7 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
                     {"INFO"}, "Invalid cotangent value. Increase iterations and/or fix the mesh."
                 )
             distance /= np.max(distance)
-            
+
             # varadhan
             distance = np.sqrt(-np.log(distance))
             distance /= np.max(distance)
@@ -1435,6 +1487,7 @@ class FloorPlan_OP(mesh_ops.MeshOperatorGenerator):
         self.category = "Build"
 
         def _pl(self, bm, context):
+            self.report({"INFO"}, "To be done")
             pass
 
         self.payload = _pl
