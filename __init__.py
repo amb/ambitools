@@ -1319,9 +1319,17 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
         self.info = "Distance to selected to vertex colors v2"
         self.category = "Vertex color"
 
-        self.props["iter"] = bpy.props.IntProperty(name="Max iterations", default=20, min=1)
+        self.props["iter"] = bpy.props.IntProperty(
+            name="Max iterations",
+            default=20,
+            min=1,
+            description="Number of maximum heat kernel iterations",
+        )
         self.props["speed_multi"] = bpy.props.FloatProperty(
-            name="Speed multiplier", default=1.0, min=1.0
+            name="Speed multiplier",
+            default=1.0,
+            min=1.0,
+            description="Faster convergence, more error",
         )
         self.props["where_from"] = bpy.props.EnumProperty(
             items=[
@@ -1332,7 +1340,11 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
             name="Type",
             default="BOTH",
         )
-        self.props["break_fill"] = bpy.props.BoolProperty(name="Break on fill", default=True)
+        self.props["break_fill"] = bpy.props.BoolProperty(
+            name="Break on fill",
+            default=True,
+            description="Stop iteration when all cells have been visited",
+        )
 
         def _pl(self, bm, context):
             distance = np.zeros(len(bm.verts), dtype=np.float64)
@@ -1389,30 +1401,25 @@ class DistanceToVCOL2_OP(mesh_ops.MeshOperatorGenerator):
             for ic in range(self.iter):
                 n_res *= 0.0
                 np.add.at(n_res, n_flow[:, 0], n_flow_wg * distance[n_flow[:, 1]])
+                # TODO: why this
+                # replace sv_speed with a scalar
                 distance[sv_idx] = n_res[sv_idx] * sv_speed + distance[sv_idx] * (1.0 - sv_speed)
-                if self.break_fill and np.min(distance) > 1.0e-5:
+                if self.break_fill and np.min(distance) > 1.0e-30:
                     print("broke iteration at {}, no more empties.".format(ic))
                     break
             else:
                 # Didn't break out of for loop
+                # which means there are unvisited nodes in the graph
                 # Set global minimum value to the processed minimum value
                 mval = np.min(distance[distance > 0])
                 print("geodesic: setting min value as", mval)
                 distance[distance <= 0] = mval
 
-            # dmin = np.min(distance)
-            # if dmin <= 0.0:
-            #     distance -= dmin - 1.0e6
-            #     self.report(
-            #         {"INFO"}, "Invalid cotangent value. Increase iterations and/or fix the mesh."
-            #     )
             distance /= np.max(distance)
 
             # varadhan
             distance = np.sqrt(-np.log(distance))
             distance /= np.max(distance)
-
-            print("{}, {}".format(np.max(distance), np.min(distance)))
 
             c = np.ones((len(bm.verts), 4))
             c = (c.T * distance.T).T
