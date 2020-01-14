@@ -1170,9 +1170,13 @@ class CurvatureToVCOL_OP(mesh_ops.MeshOperatorGenerator):
 
             if self.alt:
                 curve = np.abs(curve)
+                curve /= np.max(curve)
 
-            curve -= np.min(curve)
-            curve /= np.max(curve)
+            else:
+                multiplier = max(-np.min(curve), np.max(curve))
+                curve /= multiplier
+                curve += 0.5
+
             curve **= self.power
 
             c = np.ones((len(mesh.vertices), 4))
