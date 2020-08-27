@@ -1694,7 +1694,8 @@ class OffsetPolygon_OP(mesh_ops.MeshOperatorGenerator):
 
 class RemoveBevel_OP(mesh_ops.MeshOperatorGenerator):
     def generate(self):
-        self.props["repetitions"] = bpy.props.IntProperty(name="Repetitions", default=3, min=1)
+        self.props["repetitions"] = bpy.props.IntProperty(name="Repetitions", default=3, min=0)
+        self.props["distance"] = bpy.props.FloatProperty(name="Distance", default=1.0, min=0.0001)
 
         self.prefix = "remove_bevel"
         self.info = "Remove Bevel"
@@ -1721,20 +1722,27 @@ class RemoveBevel_OP(mesh_ops.MeshOperatorGenerator):
 
                 # ASSUMPTION: delete operation leaves corner edges selected
                 corner_edges = [e for e in bm.edges if e.select]
-
                 extruded_faces = []
+
+                e_tans = {}
+                for e in bm.edges:
+                    e_tans[e] = e.calc_tangent(e.link_loops[0])
 
                 # Go through each corner edge and extrude to continue the face
                 for e in corner_edges:
-                    # # Get face normal
-                    # ef = e.link_faces
-                    # if len(ef) != 1:
-                    #     continue
-                    # ef = ef[0]
-                    # f_vec = ef.normal
+                    # Get face normal
+                    ef = e.link_faces
+                    if len(ef) != 1:
+                        continue
+                    ef = ef[0]
+                    f_vec = ef.normal
 
                     # Get the 2D extrude directions in 3D plane
                     ll = e.link_loops[0]
+
+                    # Next and prev edges
+                    # edge1 = [i for i in e.verts[1].link_edges if i.select and i != e][0]
+                    # edge0 = [i for i in e.verts[0].link_edges if i.select and i != e][0]
 
                     # Check that the verts match
                     llne = ll.link_loop_next.edge
@@ -1772,15 +1780,15 @@ class RemoveBevel_OP(mesh_ops.MeshOperatorGenerator):
                     ret = bmesh.ops.extrude_edge_only(bm, edges=[e])
                     new_edge = [i for i in ret["geom"] if isinstance(i, bmesh.types.BMEdge)][0]
                     new_face = [i for i in ret["geom"] if isinstance(i, bmesh.types.BMFace)][0]
-
-                    # new_face.select = True
                     extruded_faces.append(new_face)
-                    # e_vec = (e.verts[0].co - e.verts[1].co).normalized()
-                    # trs = e_vec.cross(f_vec)
-                    # bmesh.ops.translate(bm, verts=new_edge.verts, vec=trs)
 
-                    new_edge.verts[1].co += pvec
-                    new_edge.verts[0].co += nvec
+                    new_edge.verts[1].co += pvec * self.distance
+                    new_edge.verts[0].co += nvec * self.distance
+
+                    # tvec1 = (e_tans[edge1] + e_tans[e]).normalized()
+                    # tvec0 = (e_tans[edge0] + e_tans[e]).normalized()
+                    # new_edge.verts[1].co -= tvec1 * self.distance
+                    # new_edge.verts[0].co -= tvec0 * self.distance
 
                 # HACK: knife intersect ALL the faces
                 # for f in extruded_faces[:]:
@@ -1793,22 +1801,29 @@ class RemoveBevel_OP(mesh_ops.MeshOperatorGenerator):
                 # bmesh.ops.delete(bm, geom=extruded_faces[:], context='FACES')
 
                 # Remove doubles
-                bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=0.001)
+                bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=0.00001)
 
+                # Select all not in original_faces
                 for f in bm.faces:
-                    f.select = f not in original_faces
+                    f.select = True
+
+                for f in original_faces:
+                    f.select = False
 
             # HACK: Intersect is not perfect, so repeat it, hopefully it will work :s
-            for _ in range(2):
+            for _ in range(self.repetitions):
                 bpy.ops.mesh.intersect(mode="SELECT", separate_mode="CUT")
                 with au.Mode_set("EDIT"), abm.Bmesh_from_edit(mesh) as bm:
                     # Select all faces that have selected edges (grow by edges selection)
-                    es_idx = set(e.index for e in corner_edges)
+                    es_idx = set(e.index for e in corner_edges if e.is_valid)
                     for f in bm.faces:
                         for e in f.edges:
                             if e.index in es_idx:
                                 f.select = True
                                 break
+
+                    for f in original_faces:
+                        f.select = True
 
                     # Delete all not selected
                     bmesh.ops.delete(
@@ -1816,25 +1831,27 @@ class RemoveBevel_OP(mesh_ops.MeshOperatorGenerator):
                     )
 
                     # Remove doubles
-                    bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=0.001)
+                    bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=0.00001)
 
                     # Select all not in original_faces
                     for f in bm.faces:
-                        f.select = f not in original_faces
+                        f.select = True
 
-                    # Remove wires
-                    # orig_edges = set()
-                    # for f in original_faces:
-                    #     for e in f.edges:
-                    #         orig_edges.add(e)
+                    for f in original_faces:
+                        f.select = False
 
-                    remove_edges = []
-                    for e in bm.edges[:]:
-                        if len(e.link_faces) == 0:
-                            remove_edges.append(e)
-                    bmesh.ops.delete(bm, geom=remove_edges, context='EDGES')
+            # Remove wires
+            # orig_edges = set()
+            # for f in original_faces:
+            #     for e in f.edges:
+            #         orig_edges.add(e)
 
-
+            with au.Mode_set("EDIT"), abm.Bmesh_from_edit(mesh) as bm:
+                remove_edges = []
+                for e in bm.edges[:]:
+                    if len(e.link_faces) == 0:
+                        remove_edges.append(e)
+                bmesh.ops.delete(bm, geom=remove_edges, context='EDGES')
 
             # edge_set = set(corner_edges)
             # for f in corner_edges:
