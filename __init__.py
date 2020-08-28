@@ -27,7 +27,7 @@ bl_info = {
     " 99% completely broken.",
     "author": "ambi",
     "location": "3D view > Tools > Edit > Mesh toolbox",
-    "version": (1, 1, 17),
+    "version": (1, 1, 18),
     "blender": (2, 80, 0),
     "support": "TESTING",
     "tracker_url": "https://github.com/amb/ambitools/issues",
@@ -40,9 +40,10 @@ print("Import: __init__.py")
 import bpy  # noqa:F401
 import numpy as np  # noqa:F401
 import bmesh  # noqa:F401
-from collections import OrderedDict  # noqa:F401
+from collections import OrderedDict, defaultdict  # noqa:F401
 import mathutils as mu  # noqa:F401
 import mathutils.bvhtree as bvht
+import mathutils.geometry as mug
 
 # import/reload all source files
 from .bpy_amb import utils as au
@@ -1696,6 +1697,7 @@ class RemoveBevel_OP(mesh_ops.MeshOperatorGenerator):
     def generate(self):
         self.props["repetitions"] = bpy.props.IntProperty(name="Repetitions", default=3, min=0)
         self.props["distance"] = bpy.props.FloatProperty(name="Distance", default=1.0, min=0.0001)
+        self.props["corner_prune"] = bpy.props.BoolProperty(name="Prune corners", default=True)
 
         self.prefix = "remove_bevel"
         self.info = "Remove Bevel"
@@ -1722,73 +1724,250 @@ class RemoveBevel_OP(mesh_ops.MeshOperatorGenerator):
 
                 # ASSUMPTION: delete operation leaves corner edges selected
                 corner_edges = [e for e in bm.edges if e.select]
+                # corner_edges = list(set(corner_edges))
                 extruded_faces = []
 
+                bm.verts.ensure_lookup_table()
+
+                # Calculate tangents for each vertex in the resulting edge loop
                 e_tans = {}
-                for e in bm.edges:
-                    e_tans[e] = e.calc_tangent(e.link_loops[0])
-
-                # Go through each corner edge and extrude to continue the face
+                v_tans = defaultdict(type(bm.verts[0].co))
                 for e in corner_edges:
-                    # Get face normal
-                    ef = e.link_faces
-                    if len(ef) != 1:
-                        continue
-                    ef = ef[0]
-                    f_vec = ef.normal
+                    e_tans[e] = -e.calc_tangent(e.link_loops[0]).normalized()
+                    v_tans[e.verts[0]] += e_tans[e]
+                    v_tans[e.verts[1]] += e_tans[e]
 
-                    # Get the 2D extrude directions in 3D plane
-                    ll = e.link_loops[0]
+                # Normalize the tangents
+                for k in v_tans.keys():
+                    v_tans[k] = v_tans[k].normalized()
 
-                    # Next and prev edges
-                    # edge1 = [i for i in e.verts[1].link_edges if i.select and i != e][0]
-                    # edge0 = [i for i in e.verts[0].link_edges if i.select and i != e][0]
+                # Create max extrude distance for verts in faces that self intersect
+                # (eg. X for quads)
 
-                    # Check that the verts match
-                    llne = ll.link_loop_next.edge
-                    llpe = ll.link_loop_prev.edge
-                    assert llne != ll.edge
-                    assert llpe != ll.edge
+                v_max_extrude = {}
+                for e in corner_edges:
+                    # Set default max extrude values
+                    if e.verts[0] not in v_max_extrude:
+                        v_max_extrude[e.verts[0]] = self.distance
+                    if e.verts[1] not in v_max_extrude:
+                        v_max_extrude[e.verts[1]] = self.distance
 
-                    lel = ll.edge
-                    evec = (lel.verts[0].co - lel.verts[1].co).normalized()
+                if self.corner_prune:
+                    for e in corner_edges:
+                        # Project to 2D according to the plane
+                        edge_vec = e.verts[1].co - e.verts[0].co
+                        edge_vecn = edge_vec.normalized()
+                        normal = (
+                            edge_vecn.cross(v_tans[e.verts[0]])
+                            + edge_vecn.cross(v_tans[e.verts[1]])
+                        ).normalized()
+                        ttan = edge_vecn.cross(normal).normalized()
 
-                    nvec = (llne.verts[0].co - llne.verts[1].co).normalized()
-                    pvec = (llpe.verts[0].co - llpe.verts[1].co).normalized()
+                        # The to-be face edges as vectors in 3D space
+                        vec_0 = self.distance * v_tans[e.verts[0]]
+                        vec_1 = self.distance * v_tans[e.verts[1]]
 
-                    # Shared points nvec
-                    if llne.verts[1].co == ll.edge.verts[0].co:
-                        # print("E-10 ", end='')
-                        nvec = (-nvec + evec).normalized()
-                    elif llne.verts[0].co == ll.edge.verts[0].co:
-                        # print("E-00 ", end='')
-                        nvec = (nvec + evec).normalized()
-                    else:
-                        assert False
+                        # What is the rotation that removes Z dimension?
+                        if False:
+                            side = normal.cross(ttan).normalized()
+                            mat = mu.Matrix()
+                            # mat[0].xyz = ttan
+                            # mat[1].xyz = normal
+                            # mat[2].xyz = edge_vec
+                            mat[0][0], mat[1][0], mat[2][0] = ttan
+                            mat[0][1], mat[1][1], mat[2][1] = normal
+                            mat[0][2], mat[1][2], mat[2][2] = side
+                            # mat[0:3][1] = normal
+                            # mat[0:3][2] = edge_vec
+                            print(mat)
+                            print(ttan.dot(normal), normal.dot(side), ttan.dot(side))
 
-                    # Shared points pvec
-                    if llpe.verts[1].co == ll.edge.verts[1].co:
-                        # print("P-11 ", end='')
-                        pvec = (-pvec - evec).normalized()
-                    elif llpe.verts[0].co == ll.edge.verts[1].co:
-                        # print("P-01 ", end='')
-                        pvec = (pvec - evec).normalized()
-                    else:
-                        assert False
+                            imat = mat.inverted()
+                            print(vec_0 @ mat, vec_1 @ imat)
 
-                    # Extrude to the direction of xprod of face normal and the edge
-                    ret = bmesh.ops.extrude_edge_only(bm, edges=[e])
-                    new_edge = [i for i in ret["geom"] if isinstance(i, bmesh.types.BMEdge)][0]
-                    new_face = [i for i in ret["geom"] if isinstance(i, bmesh.types.BMFace)][0]
-                    extruded_faces.append(new_face)
+                        # Intersects at some point
+                        # from dot product / cosine duality
+                        # and line equation
+                        if False:
 
-                    new_edge.verts[1].co += pvec * self.distance
-                    new_edge.verts[0].co += nvec * self.distance
+                            # If total angle of vert_0 and vert_1 in the new face is over 180
+                            # It won't intersect and we're ok, otherwise check intersect
+                            # distance based on the dot products
+                            a0 = v_tans[e.verts[0]].dot(edge_vecn)
+                            a1 = v_tans[e.verts[1]].dot(-edge_vecn)
 
-                    # tvec1 = (e_tans[edge1] + e_tans[e]).normalized()
-                    # tvec0 = (e_tans[edge0] + e_tans[e]).normalized()
-                    # new_edge.verts[1].co -= tvec1 * self.distance
-                    # new_edge.verts[0].co -= tvec0 * self.distance
+                            if a0 + a1 > 0.0:
+                                # k0 = 1.0 - a0
+                                # k1 = -(1.0 - a1)
+                                k0 = 1.0 / np.tan(np.arccos(a0))
+                                k1 = 1.0 / np.tan(np.arccos(a1))
+
+                                print(k0, k1)
+
+                                # c - k0 * x = k1 * x
+                                # => c = (k0 + k1) * x
+                                # => x = c / (k0 + k1)
+                                x = edge_vec.length / (k0 + k1)
+                                assert x >= 0.0
+
+                                # Now we can find the values how far we can extrude each edge based on x
+                                if x < self.distance:
+                                    if x < v_max_extrude[e.verts[0]]:
+                                        v_max_extrude[e.verts[0]] = self.distance * 0.25
+                                    if x < v_max_extrude[e.verts[1]]:
+                                        v_max_extrude[e.verts[1]] = self.distance * 0.25
+
+                                # No need for complex linear algebra, just project vecs to a plane
+                                # pvec_0 = vec_0 - vec_0.dot(normal) * normal
+                                # pvec_1 = vec_1 - vec_1.dot(normal) * normal
+
+                                # edge_vec + pvec_1 * n = pvec_0 * n
+                                # => edge_vec.length = ((pvec_0 - pvec_1) * n).length
+
+                        # Project vec_0 and vec_1 to the edge_vec
+                        if False:
+                            p0 = vec_0.dot(edge_vec) / edge_vec.length
+                            p1 = vec_1.dot(-edge_vec) / edge_vec.length
+                            if p1 - p0 > edge_vec.length:
+                                # Intersects
+                                # TODO: the locations don't match, unfortunately
+                                # SOLUTION: can just change the vectors, no biggie???
+
+                                # (p1 - p0) * t = edge_vec.length
+                                # t = edge_vec.length / (p1 - p0)
+
+                                print("I ", end="")
+                                v_max_extrude[e.verts[0]] = min(abs(p0), v_max_extrude[e.verts[0]])
+                                v_max_extrude[e.verts[1]] = min(abs(p1), v_max_extrude[e.verts[1]])
+
+                        # With find closest point of two lines
+                        if False:
+                            zero = mu.Vector([0.0, 0.0, 0.0])
+                            ret = mug.intersect_line_line(zero, vec_0, edge_vec, edge_vec + vec_1)
+
+                            if (
+                                ret is None
+                                or ret[0].length > vec_0.length
+                                or (edge_vec - ret[1]).length > vec_1.length
+                                or (ret[1] - ret[0]).length > edge_vec.length * 0.5
+                                or (ret[1] - ret[0]).length
+                                > (edge_vec + vec_1 - vec_0).length * 0.5
+                            ):
+                                continue
+
+                            # print(ret)
+
+                            eps = 0.0001
+                            if not (
+                                # Lower match
+                                (ret[0].length < eps and (edge_vec - ret[1]).length < eps)
+                                or
+                                # Upper match
+                                (
+                                    (vec_0 - ret[0]).length < eps
+                                    and (edge_vec + vec_1 - ret[1]).length < eps
+                                )
+                            ):
+                                print("Extrusion limit hit: ", end="")
+                                # print(ret[0], vec_0, edge_vec, vec_1)
+                                a = ret[0].length / vec_0.length
+                                b = (edge_vec - ret[1]).length / vec_1.length
+                                print("a =", a, "b =", b)
+                                v_max_extrude[e.verts[0]] = min(
+                                    a * vec_0.length, v_max_extrude[e.verts[0]]
+                                )
+                                v_max_extrude[e.verts[1]] = min(
+                                    b * vec_1.length, v_max_extrude[e.verts[1]]
+                                )
+
+                            # print(ret)
+
+                print()
+
+                # Extrude edge loop according to tangents
+                ret = bmesh.ops.extrude_edge_only(bm, edges=corner_edges)
+                new_verts = [i for i in ret["geom"] if isinstance(i, bmesh.types.BMVert)]
+                new_edges = [i for i in ret["geom"] if isinstance(i, bmesh.types.BMEdge)]
+                # print(len(corner_edges), len(list(set(corner_edges))))
+                # print(len(new_verts), len(new_edges))
+                for iv, v in enumerate(new_verts):
+                    # Get the vert connected to the original edge loop
+                    connected_vert = [e.other_vert(v) for e in v.link_edges if e.is_manifold][0]
+                    v.co += v_tans[connected_vert] * v_max_extrude[connected_vert]
+                    # if v_max_extrude[connected_vert] < self.distance and iv > 0:
+                    #     prev_v = [e.other_vert(v) for e in v.link_edges if not e.is_manifold][0]
+                    #     # bmesh.ops.pointmerge(bm, verts=[v, next_v], merge_co=next_v.co)
+                    #     v.co = prev_v.co
+                    # else:
+                    #     v.co += v_tans[connected_vert] * self.distance
+
+                # Disabled code path
+                if False:
+                    # Go through each corner edge and extrude to continue the face
+                    for e in corner_edges:
+                        # # Get face normal
+                        # ef = e.link_faces
+                        # if len(ef) != 1:
+                        #     continue
+                        # ef = ef[0]
+                        # f_vec = ef.normal
+
+                        # Next and prev edges
+                        edge1 = [i for i in e.verts[1].link_edges if i.select and i != e][0]
+                        edge0 = [i for i in e.verts[0].link_edges if i.select and i != e][0]
+
+                        # # Get the 2D extrude directions in 3D plane
+                        # ll = e.link_loops[0]
+
+                        # # Check that the verts match
+                        # llne = ll.link_loop_next.edge
+                        # llpe = ll.link_loop_prev.edge
+                        # assert llne != ll.edge
+                        # assert llpe != ll.edge
+
+                        # lel = ll.edge
+                        # evec = (lel.verts[0].co - lel.verts[1].co).normalized()
+
+                        # nvec = (llne.verts[0].co - llne.verts[1].co).normalized()
+                        # pvec = (llpe.verts[0].co - llpe.verts[1].co).normalized()
+
+                        # # Shared points nvec
+                        # if llne.verts[1].co == ll.edge.verts[0].co:
+                        #     nvec = (-nvec + evec).normalized()
+                        # elif llne.verts[0].co == ll.edge.verts[0].co:
+                        #     nvec = (nvec + evec).normalized()
+                        # elif llne.verts[1].co == ll.edge.verts[1].co:
+                        #     nvec = (-nvec - evec).normalized()
+                        # elif llne.verts[0].co == ll.edge.verts[1].co:
+                        #     nvec = (nvec - evec).normalized()
+                        # else:
+                        #     assert False
+
+                        # # Shared points pvec
+                        # if llpe.verts[1].co == ll.edge.verts[1].co:
+                        #     pvec = (-pvec - evec).normalized()
+                        # elif llpe.verts[0].co == ll.edge.verts[1].co:
+                        #     pvec = (pvec - evec).normalized()
+                        # elif llpe.verts[1].co == ll.edge.verts[0].co:
+                        #     pvec = (-pvec + evec).normalized()
+                        # elif llpe.verts[0].co == ll.edge.verts[0].co:
+                        #     pvec = (pvec + evec).normalized()
+                        # else:
+                        #     assert False
+
+                        # Extrude to the direction of xprod of face normal and the edge
+                        ret = bmesh.ops.extrude_edge_only(bm, edges=[e])
+                        new_edge = [i for i in ret["geom"] if isinstance(i, bmesh.types.BMEdge)][0]
+                        new_face = [i for i in ret["geom"] if isinstance(i, bmesh.types.BMFace)][0]
+                        extruded_faces.append(new_face)
+
+                        # new_edge.verts[1].co += pvec * self.distance
+                        # new_edge.verts[0].co += nvec * self.distance
+
+                        tvec1 = (e_tans[edge1] + e_tans[e]).normalized()
+                        tvec0 = (e_tans[edge0] + e_tans[e]).normalized()
+                        new_edge.verts[1].co -= tvec1 * self.distance
+                        new_edge.verts[0].co -= tvec0 * self.distance
 
                 # HACK: knife intersect ALL the faces
                 # for f in extruded_faces[:]:
@@ -1801,7 +1980,9 @@ class RemoveBevel_OP(mesh_ops.MeshOperatorGenerator):
                 # bmesh.ops.delete(bm, geom=extruded_faces[:], context='FACES')
 
                 # Remove doubles
-                bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=0.00001)
+                bmesh.ops.remove_doubles(
+                    bm, verts=list(set(new_verts + list(v_tans.keys()))), dist=0.00001
+                )
 
                 # Select all not in original_faces
                 for f in bm.faces:
@@ -1841,21 +2022,12 @@ class RemoveBevel_OP(mesh_ops.MeshOperatorGenerator):
                         f.select = False
 
             # Remove wires
-            # orig_edges = set()
-            # for f in original_faces:
-            #     for e in f.edges:
-            #         orig_edges.add(e)
-
             with au.Mode_set("EDIT"), abm.Bmesh_from_edit(mesh) as bm:
                 remove_edges = []
                 for e in bm.edges[:]:
                     if len(e.link_faces) == 0:
                         remove_edges.append(e)
-                bmesh.ops.delete(bm, geom=remove_edges, context='EDGES')
-
-            # edge_set = set(corner_edges)
-            # for f in corner_edges:
-            #     e.select = True
+                bmesh.ops.delete(bm, geom=remove_edges, context="EDGES")
 
         self.payload = _pl
 
